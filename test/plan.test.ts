@@ -11,6 +11,7 @@ import {
 	gateAdvisor,
 	loadPlan,
 	planLines,
+	reopenStep,
 	savePlan,
 	setPlan,
 } from "../extensions/graph/plan";
@@ -57,8 +58,74 @@ describe("plan", () => {
 		setPlan(p, ["A", "B"]);
 		addSteps(p, ["C"]);
 		expect(p.steps.map(s => s.id)).toEqual([1, 2, 3]);
+		expect(addSteps(p, Array.from({ length: 21 }, (_, i) => `X${i}`)).error).toContain("at most 20");
 		expect(blockStep(p, 1, "no access to the test rig").next?.id).toBe(2);
 		expect(p.steps[0]!.reason).toBe("no access to the test rig");
+	});
+
+	test("a step splits into substeps that run under it, before it can close", () => {
+		const p = emptyPlan();
+		setPlan(p, ["Add reader", "Add writer", "Update docs"]);
+		const r = addSteps(p, ["Write the reader test", "Implement the reader"], "added", 1);
+		expect(r.error).toBeUndefined();
+		// shown under step 1, and run before step 2
+		expect(p.steps.map(s => s.id)).toEqual([1, 4, 5, 2, 3]);
+		expect(p.steps.find(s => s.id === 4)!.parent).toBe(1);
+		expect(active(p)?.id).toBe(4);
+		expect(finishStep(p, 1, EVIDENCE).error).toContain("not the active step");
+		expect(finishStep(p, 4, EVIDENCE).next?.id).toBe(5);
+		// a later split of the same step lands after its existing substeps
+		addSteps(p, ["Handle empty files"], "added", 1);
+		expect(p.steps.map(s => s.id)).toEqual([1, 4, 5, 6, 2, 3]);
+		expect(finishStep(p, 5, EVIDENCE).next?.id).toBe(6);
+		expect(blockStep(p, 6, "no sample empty file on the rig").next?.id).toBe(1); // parent comes back
+		expect(finishStep(p, 1, EVIDENCE).next?.id).toBe(2);
+		// one level deep, only open steps, real ids
+		expect(addSteps(p, ["x"], "added", 4).error).toContain("one level");
+		expect(addSteps(p, ["x"], "added", 1).error).toContain("done");
+		expect(addSteps(p, ["x"], "added", 99).error).toContain("no step 99");
+		expect(planLines(p).some(l => l.startsWith("    [x] 4."))).toBe(true);
+	});
+
+	test("the parent can't close while a substep is open", () => {
+		const p = emptyPlan();
+		setPlan(p, ["A", "B"]);
+		addSteps(p, ["A1"], "added", 1);
+		const parent = p.steps[0]!;
+		// force the parent active to check the guard itself
+		p.steps.find(s => s.id === 3)!.status = "pending";
+		parent.status = "active";
+		expect(finishStep(p, 1, EVIDENCE).error).toContain("open substeps: 3");
+	});
+
+	test("a blocked step can be reopened and picks up where it left off", () => {
+		const p = emptyPlan();
+		setPlan(p, ["A", "B", "C"]);
+		blockStep(p, 1, "waiting on the test rig password");
+		expect(active(p)?.id).toBe(2);
+		expect(reopenStep(p, 2, "not blocked at all").error).toContain("not blocked");
+		expect(reopenStep(p, 1, "ok").error).toContain("one sentence");
+		const r = reopenStep(p, 1, "The lead sent the rig password.", "2026-11-11T05:00:00Z");
+		expect(r.error).toBeUndefined();
+		expect(r.paused?.id).toBe(2);
+		expect(active(p)?.id).toBe(1);
+		expect(p.steps[0]!.reopenedAt).toBe("2026-11-11T05:00:00Z");
+		expect(p.steps[0]!.history?.map(h => h.event)).toEqual(["blocked", "reopened"]);
+		expect(finishStep(p, 1, EVIDENCE).next?.id).toBe(2); // the paused step comes back
+		const info = { id: "t", title: "T", repo: "r", cwd: "/r", startedAt: "2026-11-11T00:00:00.000Z", dirtyAtStart: [] };
+		expect(renderReport(info, [], [], undefined, { changedFiles: [] }, undefined, p)).toContain("reopened 1x: The lead sent the rig password.");
+	});
+
+	test("reopening a substep reopens its closed parent", () => {
+		const p = emptyPlan();
+		setPlan(p, ["A", "B"]);
+		addSteps(p, ["A1"], "added", 1);
+		blockStep(p, 3, "needs the sample data set");
+		finishStep(p, 1, EVIDENCE);
+		expect(p.steps[0]!.status).toBe("done");
+		reopenStep(p, 3, "Sample data set is now on the share.");
+		expect(p.steps[0]!.status).toBe("pending");
+		expect(finishStep(p, 3, EVIDENCE).next?.id).toBe(1);
 	});
 
 	test("advisor gate passes one note per step, holds the rest, and is stable on replay", () => {

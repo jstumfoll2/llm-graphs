@@ -33,6 +33,8 @@ export interface VerifyDeps {
 	getStore: () => TaskStore | undefined;
 	repo: () => { name: string; top: string };
 	activeStep: () => number | undefined;
+	/** When the active step was last reopened, if ever; failures before it don't count. */
+	stepSince?: () => string | undefined;
 	stepsDone: () => string[];
 	changedFiles: (ctx: ExtensionContext) => Promise<string[]>;
 	ensureTask: (ctx: ExtensionContext, title: string) => Promise<TaskStore>;
@@ -97,7 +99,7 @@ export function registerVerify(pi: ExtensionAPI, deps: VerifyDeps): VerifyHooks 
 		}
 		const st = state()!;
 		const step = deps.activeStep();
-		const failed = failuresForStep(st.runs(), step);
+		const failed = failuresForStep(st.runs(), step, deps.stepSince?.());
 		if (failed >= cfg.max_attempts) {
 			return {
 				message: `Verify has failed ${failed} times on this step, the limit is ${cfg.max_attempts}. Stop retrying: call step_blocked with a one-sentence reason, and put what you tried in report_step.`,
@@ -155,7 +157,7 @@ export function registerVerify(pi: ExtensionAPI, deps: VerifyDeps): VerifyHooks 
 	}
 
 	function failures(st: VerifyState, step: number | undefined): number {
-		return failuresForStep(st.runs(), step);
+		return failuresForStep(st.runs(), step, deps.stepSince?.());
 	}
 
 	pi.registerTool({

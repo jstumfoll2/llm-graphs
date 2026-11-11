@@ -27,7 +27,10 @@ describe("store", () => {
 	test("slug and task ids are filesystem safe", () => {
 		expect(slug("Fix the 6DOF gain table!!")).toBe("fix-the-6dof-gain-table");
 		expect(slug("")).toBe("task");
-		expect(newTaskId("Hello world", new Date(2026, 10, 11, 4, 5, 6))).toBe("20261111-040506-hello-world");
+		expect(newTaskId("Hello world", new Date(2026, 10, 11, 4, 5, 6))).toMatch(/^20261111-040506-[0-9a-f]{4}-hello-world$/);
+		// two sessions starting the same task in the same second get separate folders
+		const same = new Date(2026, 10, 11, 4, 5, 6);
+		expect(new Set(Array.from({ length: 20 }, () => newTaskId("Fix it", same))).size).toBeGreaterThan(1);
 	});
 
 	test("round trips task, ledger, steps and summary; skips a torn last line", () => {
@@ -54,7 +57,10 @@ describe("store", () => {
 				dirtyAtStart: [],
 			});
 		}
-		expect(pruneTasks(tmp, "prune-repo", 2)).toEqual(["20261101-000000-x"]);
+		// all three were just written, so nothing is old enough to remove
+		expect(pruneTasks(tmp, "prune-repo", 2)).toEqual([]);
+		// a day later, the oldest goes
+		expect(pruneTasks(tmp, "prune-repo", 2, 24, Date.now() + 25 * 3600_000)).toEqual(["20261101-000000-x"]);
 		expect(fs.readdirSync(path.join(tmp, "prune-repo")).sort()).toEqual(["20261102-000000-y", "20261103-000000-z"]);
 	});
 });

@@ -10,7 +10,9 @@ The task's steps live in a file, not in the model's memory. Code decides what is
 
 - **`plan_steps` tool.** The agent sets the ordered step list once, at the start. It can't be rewritten later.
 - **`step_done` tool.** Finishes the active step only, and only with evidence (what was run or checked and what it showed). The reply names the next step.
-- **`add_steps` / `step_blocked` tools.** Extra work goes after all existing steps; nothing is removed or reordered. A step that can't be done gets a one-line reason and the agent moves on.
+- **`add_steps` tool.** Extra work goes after all existing steps; nothing is removed or reordered. At most 20 steps per call.
+- **Substeps.** `add_steps` with `under: <id>` splits an open step into substeps. They are listed under it, run before the next step, and the step itself can't be closed while any of them is open. One level deep. So a high-level list from you stays readable as that list, with the agent's breakdown under each item.
+- **`step_blocked` / `step_reopen` tools.** A step that can't be done gets a one-line reason and the agent moves on. Once the blocker is cleared (you or a lead agent answered), `step_reopen` makes it the active step again, pauses whatever was active, and resets that step's verify retry count. The report keeps the block and the reopen. You can also reopen one yourself with `/plan reopen <id> <what cleared it>`.
 - **Your mid-task asks.** `/ask <text>` queues an ask. It joins the plan at the next step boundary, after the steps already there, so part 2 of your original ask can't be pushed out.
 - **No going quiet.** If the agent stops with steps left, it gets a follow-up naming the open step. After 3 nudges with no progress it stops nudging and warns you. It doesn't nudge when its last message was a question for you.
 - **Advisor capped.** The first advisor note during a step reaches the agent. Later ones in the same step are held back and listed in the report, which ends the advisor back-and-forth loop.
@@ -54,14 +56,18 @@ The agent writes a short, fixed-shape note after each step. A hook logs every ed
 - **`report_step` tool.** After each step the model records: what it did (2 to 5 sentences, enforced), decisions and why, tests run, open questions, and anything that needs you. Changed files are added by the plugin from the ledger and `git status`.
 - **`report_summary` tool.** A 3 to 8 sentence overview when the task is done or blocked, plus the MR link.
 - **Nudge.** If the agent stops after 3 or more unreported edits or commands, it gets one follow-up asking it to report. Only one per gap, so it cannot loop.
-- **Subagents.** Workers in the same checkout write into the lead's current task, so their work lands in the same report.
-- **Bounded storage.** Reports live outside your checkout. Only the newest 30 task folders per repo are kept.
+- **Subagents.** A lead's subagents write into the lead's current task, so their work lands in the same report.
+- **One folder per session.** Each OMP session gets its own task folder, even when several run in the same repo at once. Folder names carry a random part, and the lead-to-subagent link lives only inside one OMP process, never in a shared file.
+- **Bounded storage.** Reports live outside your checkout. Only the newest 30 task folders per repo are kept, and a folder written to in the last 24 hours is never removed.
 
 ### Install
 
 ```sh
-# from GitHub (pin a tag)
-omp plugin install 'github:jstumfoll2/llm-graphs#v0.3.0'
+# from GitHub (latest main)
+omp plugin install 'github:jstumfoll2/llm-graphs'
+
+# or pin a commit or a release tag, once one is pushed (see the repo's Tags page)
+omp plugin install 'github:jstumfoll2/llm-graphs#<commit-or-tag>'
 
 # or from a local clone
 omp plugin link ./llm-graphs
@@ -75,6 +81,7 @@ Restart OMP after installing.
 | --- | --- |
 | `/ask <text>` | Queue a new ask; it joins the plan after the current step |
 | `/plan` | Show the full step list |
+| `/plan reopen <id> <note>` | Reopen a blocked step |
 | `/report` | Build `REPORT.md` and show a 3-line status above the prompt |
 | `/report view` | Open the report in a scrollable view |
 | `/report final` | Ask the agent to write the final summary |
@@ -91,7 +98,7 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | --- | --- | --- |
 | `OMP_REPORT_DIR` | `~/.omp/llm-graphs/reports` | Where task folders go |
 | `OMP_REPORT_NUDGE_AFTER` | `3` | Unreported edits or commands before a nudge |
-| `OMP_REPORT_KEEP` | `30` | Task folders kept per repo |
+| `OMP_REPORT_KEEP` | `30` | Task folders kept per repo (folders active in the last 24 hours are always kept) |
 | `OMP_GRAPH_MAX_NUDGES` | `3` | Nudges with no progress before it warns you instead |
 | `OMP_GRAPH_ADVISOR_PER_STEP` | `1` | Advisor notes the agent sees per step |
 | `OMP_GRAPH_KEEP_TODO` | unset | Set to `1` to allow OMP's own todo tool alongside the step list |
@@ -100,7 +107,7 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 ### Task folder
 
 ```
-~/.omp/llm-graphs/reports/<repo>/<task-id>/
+~/.omp/llm-graphs/reports/<repo>/<date-time>-<random>-<title>/
   task.json      title, start time, git HEAD and files already modified at start
   plan.json      step list, queued asks, advisor notes
   verify.jsonl   one line per verify run; verify/*.log holds the output (5 MB cap each)
