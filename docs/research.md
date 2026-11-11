@@ -6,8 +6,8 @@ Full write-up: [Agent loops vs graph harnesses](https://claude.ai/artifact/4SVsp
 
 One OMP plugin, in two parts:
 
-1. **Report** (this release). A change ledger written by a hook, a fixed-shape `report_step` tool, and `/report` to build one page per task.
-2. **Step graph** (next). The task's step list lives in a file and is shown as OMP's todo list. The model ticks a step only with evidence. A hook sends the next step when the agent stops with work left. The advisor gets one rework per step.
+1. **Report** (v0.1). A change ledger written by a hook, a fixed-shape `report_step` tool, and `/report` to build one page per task.
+2. **Step graph** (v0.2). The task's step list lives in a file, shown above the prompt, and replaces OMP's own todo list. The model ticks a step only with evidence. A hook sends the next step when the agent stops with work left. The advisor gets one rework per step.
 
 The lead agent you talk to delegates steps to subagents working in place in the checkout.
 

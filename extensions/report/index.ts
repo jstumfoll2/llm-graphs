@@ -15,6 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { registerGraph } from "../graph/register";
 import { renderBrief, renderReport } from "./render";
 import { newTaskId, pruneTasks, reportRoot, type StepEntry, slug, TaskStore } from "./store";
 
@@ -30,6 +31,22 @@ const RULES = `## Reporting (llm-graphs)
 - Write for a busy engineer: plain words, full sentences, no filler or invented terms. Name files, functions and numbers.
 - Keep chat replies to a few sentences; the report holds the detail.
 - When the whole task is done or blocked, call report_summary.`;
+
+function lastAssistantText(messages: unknown[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i] as { role?: string; content?: unknown };
+		if (m.role !== "assistant") continue;
+		if (typeof m.content === "string") return m.content;
+		if (Array.isArray(m.content)) {
+			return m.content
+				.filter((c: { type?: string }) => c.type === "text")
+				.map((c: { text?: string }) => c.text ?? "")
+				.join("\n");
+		}
+		return "";
+	}
+	return "";
+}
 
 function wordCount(text: string): number {
 	return text.trim().split(/\s+/).filter(Boolean).length;
@@ -145,6 +162,11 @@ export default function reportExtension(pi: ExtensionAPI) {
 		ctx.ui.setStatus("llmg-report", `report: ${steps} step${steps === 1 ? "" : "s"}`);
 	}
 
+	const graph = registerGraph(pi, {
+		getStore: () => store,
+		ensureTask: async (ctx, title) => store ?? startTask(ctx, title),
+	});
+
 	async function changedSinceStart(ctx: ExtensionContext, s: TaskStore): Promise<string[]> {
 		const info = s.info();
 		const files = new Set<string>();
@@ -162,7 +184,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		const changedFiles = await changedSinceStart(ctx, s);
 		const diffStat = info.baseHead ? await git(ctx, ["diff", "--stat", info.baseHead]) : undefined;
 		const steps = s.steps();
-		const md = renderReport(info, steps, s.ledger(), s.summary(), { changedFiles, diffStat });
+		const md = renderReport(info, steps, s.ledger(), s.summary(), { changedFiles, diffStat }, undefined, graph.plan());
 		return { file: s.writeReport(md), brief: renderBrief(info, steps, changedFiles.length) };
 	}
 
@@ -174,7 +196,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!store && ctx.agent?.kind !== "sub") await startTask(ctx, event.prompt);
-		return { systemPrompt: [...event.systemPrompt, RULES] };
+		return { systemPrompt: [...event.systemPrompt, RULES, graph.promptBlock()] };
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
@@ -195,14 +217,16 @@ export default function reportExtension(pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (event, ctx) => {
 		if (!store || event.willContinue || ctx.agent?.kind === "sub") return;
-		if (actionsSinceStep < NUDGE_AFTER || nudged) return;
-		nudged = true; // one nudge per gap, so it can never loop
+		const parts: string[] = [];
+		if (actionsSinceStep >= NUDGE_AFTER && !nudged) {
+			nudged = true; // one report nudge per gap, so it can never loop
+			parts.push(`You made ${actionsSinceStep} edits or commands since your last report_step. Call report_step for that work now.`);
+		}
+		const stepNudge = graph.nudge(lastAssistantText(event.messages), ctx);
+		if (stepNudge) parts.push(stepNudge);
+		if (!parts.length) return;
 		pi.sendMessage(
-			{
-				customType: "llmg-nudge",
-				content: `You made ${actionsSinceStep} edits or commands since your last report_step. Call report_step for that work now, then stop or continue as planned.`,
-				display: true,
-			},
+			{ customType: "llmg-nudge", content: parts.join("\n"), display: true },
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
 	});

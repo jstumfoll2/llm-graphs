@@ -1,8 +1,9 @@
 // Scripted OpenAI-compatible chat server for the end-to-end test.
 // Each request gets the next scripted reply, streamed as SSE.
+import * as fs from "node:fs";
 import * as http from "node:http";
 
-const script = [
+const defaultScript = [
 	{ tool: "write", args: { path: "gain.txt", content: "gain = 1.25\n" } },
 	{ text: "Changed the gain." }, // stops without reporting -> plugin should nudge
 	{
@@ -23,6 +24,8 @@ const script = [
 	},
 	{ text: "All done." },
 ];
+
+const script = process.env.SCRIPT ? JSON.parse(fs.readFileSync(process.env.SCRIPT, "utf8")) : defaultScript;
 
 let n = 0;
 const log = [];
