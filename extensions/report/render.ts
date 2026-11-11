@@ -3,6 +3,7 @@
  * The layout is fixed so every report reads the same way: summary and
  * decisions first, then what changed, then tests, then the step log.
  */
+import type { Plan } from "../graph/plan";
 import type { LedgerEntry, StepEntry, Summary, TaskInfo, TestRun } from "./store";
 
 export interface GitView {
@@ -42,6 +43,7 @@ export function renderReport(
 	summary: Summary | undefined,
 	git: GitView,
 	now = new Date().toISOString(),
+	plan?: Plan,
 ): string {
 	const out: string[] = [];
 	const last = steps.at(-1)?.ts ?? ledger.at(-1)?.ts ?? info.startedAt;
@@ -49,7 +51,7 @@ export function renderReport(
 	out.push(`# ${info.title}`);
 	out.push("");
 	out.push(
-		`Started ${when(info.startedAt)} · last activity ${when(last)} · ${duration(info.startedAt, last)} · ${steps.length} steps · report built ${when(now)}`,
+		`Started ${when(info.startedAt)} · last activity ${when(last)} · ${duration(info.startedAt, last)} · ${steps.length} step notes · report built ${when(now)}`,
 	);
 	out.push(`Repo: ${info.repo} (${info.cwd})`);
 	out.push("");
@@ -73,6 +75,27 @@ export function renderReport(
 	out.push("");
 	out.push(needsYou.length ? bullets(needsYou) : "Nothing.");
 	out.push("");
+
+	if (plan?.steps.length) {
+		const done = plan.steps.filter(p => p.status === "done").length;
+		out.push("## Plan");
+		out.push("");
+		out.push(`${done} of ${plan.steps.length} steps done.${plan.inbox.length ? ` ${plan.inbox.length} queued ask(s) not yet added.` : ""}`);
+		out.push("");
+		out.push("| # | Step | Status | Evidence or reason |");
+		out.push("| --- | --- | --- | --- |");
+		for (const p of plan.steps) {
+			const note = (p.evidence ?? p.reason ?? "").replace(/\|/g, "/").replace(/\s+/g, " ");
+			const title = p.source === "inbox" ? `${p.title} (your ask)` : p.title;
+			out.push(`| ${p.id} | ${title} | ${p.status} | ${note} |`);
+		}
+		const held = plan.advisor.filter(a => !a.allowed);
+		if (held.length) {
+			out.push("", "Advisor notes held back during a step (review these):");
+			out.push(bullets(held.map(a => `Step ${a.step}: ${a.text.replace(/\s+/g, " ").slice(0, 400)}`)));
+		}
+		out.push("");
+	}
 
 	out.push("## What changed");
 	out.push("");
@@ -107,7 +130,7 @@ export function renderReport(
 		out.push("");
 	}
 
-	out.push("## Steps");
+	out.push("## Step log");
 	out.push("");
 	for (const s of steps) {
 		out.push(`### ${s.n}. ${s.title}`);

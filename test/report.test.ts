@@ -97,7 +97,7 @@ describe("render", () => {
 			{ changedFiles: ["src/gain.cpp"], diffStat: " src/gain.cpp | 4 ++--" },
 			"2026-11-11T03:00:00.000Z",
 		);
-		const order = ["## Summary", "## Needs your decision", "## What changed", "## Tests", "## Open questions", "## Steps", "## Activity"];
+		const order = ["## Summary", "## Needs your decision", "## What changed", "## Tests", "## Open questions", "## Step log", "## Activity"];
 		const idx = order.map(h => md.indexOf(h));
 		expect(idx.every(i => i >= 0)).toBe(true);
 		expect([...idx].sort((a, b) => a - b)).toEqual(idx);

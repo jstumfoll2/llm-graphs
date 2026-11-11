@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # End-to-end check: real OMP + this plugin + a scripted mock model.
 # Needs: omp on PATH (or OMP=/path/to/omp), node, git.
+# SCENARIO=report (default) or SCENARIO=graph.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN="$(cd "$HERE/../.." && pwd)"
 OMP="${OMP:-omp}"
+SCENARIO="${SCENARIO:-report}"
+[ "$SCENARIO" = graph ] && export SCRIPT="$HERE/graph-script.json"
 WORK="$(mktemp -d)"
 trap 'kill $MOCK 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 
@@ -42,10 +45,18 @@ fail() { echo "FAIL: $1 (work dir $WORK)"; echo "--- omp stdout"; cat "$WORK/out
 
 [ -n "$REPORT" ] || fail "no REPORT.md written"
 grep -q '"tool":"write"' "$TASK/ledger.jsonl" || fail "write not in ledger"
-grep -q 'Raised the pitch gain' "$TASK/steps.jsonl" || fail "step not recorded"
-grep -q 'llmg-nudge\|since your last report_step' "$WORK/mock.log" || fail "no nudge reached the model"
+grep -q 'since your last report_step' "$WORK/mock.log" || fail "no report nudge reached the model"
 grep -q '## Needs your decision' "$REPORT" || fail "report missing decision section"
-grep -q 'Confirm 1.25' "$REPORT" || fail "needs_you item missing"
 grep -q 'gain.txt' "$REPORT" || fail "changed file missing"
+if [ "$SCENARIO" = graph ]; then
+	grep -q 'is still open' "$WORK/mock.log" || fail "no step nudge reached the model"
+	grep -q '"status": "done"' "$TASK/plan.json" || fail "plan.json has no finished step"
+	! grep -q '"status": "active"' "$TASK/plan.json" || fail "a step is still active"
+	grep -q '## Plan' "$REPORT" || fail "report missing plan section"
+	grep -q '2 of 2 steps done' "$REPORT" || fail "plan not complete in report"
+else
+	grep -q 'Raised the pitch gain' "$TASK/steps.jsonl" || fail "step not recorded"
+	grep -q 'Confirm 1.25' "$REPORT" || fail "needs_you item missing"
+fi
 echo "--- REPORT.md"; cat "$REPORT"
 echo "PASS"
