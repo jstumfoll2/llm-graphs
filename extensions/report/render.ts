@@ -4,11 +4,15 @@
  * decisions first, then what changed, then tests, then the step log.
  */
 import type { Plan } from "../graph/plan";
+import type { PipelineRecord, VerifyRun } from "../verify/state";
 import type { LedgerEntry, StepEntry, Summary, TaskInfo, TestRun } from "./store";
 
 export interface GitView {
 	diffStat?: string; // `git diff --stat <baseHead>` output
 	changedFiles: string[]; // files changed since the task started
+	lastVerify?: VerifyRun; // latest run of the repo's checks, by code
+	mrUrl?: string;
+	pipeline?: PipelineRecord;
 }
 
 function when(iso: string): string {
@@ -60,7 +64,7 @@ export function renderReport(
 	out.push("");
 	if (summary) {
 		out.push(summary.overview.trim());
-		if (summary.mrLink) out.push("", `Merge request: ${summary.mrLink}`);
+		if (summary.mrLink && summary.mrLink !== git.mrUrl) out.push("", `Merge request: ${summary.mrLink}`);
 	} else if (steps.length) {
 		out.push("No final summary yet. Run `/report final` to have the agent write one.");
 		out.push("");
@@ -69,6 +73,19 @@ export function renderReport(
 		out.push("No steps reported yet.");
 	}
 	out.push("");
+
+	const status: string[] = [];
+	if (git.lastVerify) {
+		status.push(
+			`Checks (run by the plugin, ${when(git.lastVerify.ts)}): ${git.lastVerify.ok ? "passed" : "FAILED"}: ${git.lastVerify.results.map(r => `${r.name} ${r.ok ? "ok" : r.timedOut ? "timed out" : `exit ${r.code}`}`).join(", ")}`,
+		);
+	}
+	if (git.mrUrl) status.push(`Merge request: ${git.mrUrl}`);
+	if (git.pipeline) status.push(`Pipeline: ${git.pipeline.status}${git.pipeline.url ? ` (${git.pipeline.url})` : ""}${git.pipeline.failedJobs.length ? `, failed jobs: ${git.pipeline.failedJobs.map(j => j.name).join(", ")}` : ""}`);
+	if (status.length) {
+		out.push(bullets(status));
+		out.push("");
+	}
 
 	const needsYou = dedupe([...(summary?.needsYou ?? []), ...steps.flatMap(s => s.needsYou)]);
 	out.push("## Needs your decision");

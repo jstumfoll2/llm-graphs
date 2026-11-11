@@ -42,7 +42,12 @@ const RULES = `## Step list (llm-graphs)
 
 export function registerGraph(
 	pi: ExtensionAPI,
-	deps: { getStore: () => TaskStore | undefined; ensureTask: (ctx: ExtensionContext, title: string) => Promise<TaskStore> },
+	deps: {
+		getStore: () => TaskStore | undefined;
+		ensureTask: (ctx: ExtensionContext, title: string) => Promise<TaskStore>;
+		/** Error text when the active step may not finish yet (e.g. verify not passed). */
+		gate?: () => string | undefined;
+	},
 ): GraphHooks {
 	const z = pi.zod;
 	let cache: { dir: string; plan: Plan } | undefined;
@@ -125,6 +130,8 @@ export function registerGraph(
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = plan();
 			if (!p?.steps.length) return { isError: true, content: [{ type: "text", text: "No plan yet. Call plan_steps first." }] };
+			const blocked = active(p)?.id === params.id ? deps.gate?.() : undefined;
+			if (blocked) return { isError: true, content: [{ type: "text", text: blocked }] };
 			const r = finishStep(p, params.id, params.evidence);
 			if (r.error) return { isError: true, content: [{ type: "text", text: r.error }] };
 			save(ctx);

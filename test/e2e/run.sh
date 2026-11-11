@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # End-to-end check: real OMP + this plugin + a scripted mock model.
 # Needs: omp on PATH (or OMP=/path/to/omp), node, git.
-# SCENARIO=report (default) or SCENARIO=graph.
+# SCENARIO=report (default), graph, or ship (verify + fake glab).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN="$(cd "$HERE/../.." && pwd)"
 OMP="${OMP:-omp}"
 SCENARIO="${SCENARIO:-report}"
 [ "$SCENARIO" = graph ] && export SCRIPT="$HERE/graph-script.json"
+[ "$SCENARIO" = ship ] && export SCRIPT="$HERE/ship-script.json"
 WORK="$(mktemp -d)"
 trap 'kill $MOCK 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 
@@ -33,9 +34,20 @@ sleep 1
 
 mkdir -p "$WORK/repo" && cd "$WORK/repo"
 git init -q && git config user.email t@t && git config user.name t
-echo "gain = 1.0" > gain.txt && git add . && git commit -qm init
+echo "gain = 1.0" > gain.txt && git add . && git commit -qm init -q
+if [ "$SCENARIO" = ship ]; then
+	git branch -M main
+	git init -q --bare "$WORK/remote.git" && git remote add origin "$WORK/remote.git" && git push -q origin main
+	export PATH="$HERE/bin:$PATH" FAKE_GLAB_LOG="$WORK/glab.log" OMP_GRAPHS_CONFIG_DIR="$WORK/cfg"
+	mkdir -p "$WORK/cfg"
+	cat > "$WORK/cfg/repo.json" <<'CFG'
+{ "verify": [ { "name": "gain check", "cmd": "grep -q 'gain = 1.25' gain.txt" } ],
+  "mr": { "target_branch": "main", "draft": true },
+  "pipeline": { "poll_sec": 1, "max_wait_min": 1 } }
+CFG
+fi
 
-"$OMP" -p --no-session --yolo --model mock/mock --extension "$PLUGIN/extensions/report/index.ts" \
+"$OMP" -p --no-session --no-pty --yolo --model mock/mock --extension "$PLUGIN/extensions/report/index.ts" \
 	"Raise the pitch gain to 1.25" > "$WORK/out.txt" 2> "$WORK/err.txt" || { cat "$WORK/err.txt"; exit 1; }
 
 kill $MOCK; wait $MOCK 2>/dev/null || true
@@ -45,10 +57,21 @@ fail() { echo "FAIL: $1 (work dir $WORK)"; echo "--- omp stdout"; cat "$WORK/out
 
 [ -n "$REPORT" ] || fail "no REPORT.md written"
 grep -q '"tool":"write"' "$TASK/ledger.jsonl" || fail "write not in ledger"
-grep -q 'since your last report_step' "$WORK/mock.log" || fail "no report nudge reached the model"
+[ "$SCENARIO" = ship ] || grep -q 'since your last report_step' "$WORK/mock.log" || fail "no report nudge reached the model"
 grep -q '## Needs your decision' "$REPORT" || fail "report missing decision section"
 grep -q 'gain.txt' "$REPORT" || fail "changed file missing"
-if [ "$SCENARIO" = graph ]; then
+if [ "$SCENARIO" = ship ]; then
+	grep -q 'Files changed since the last passing verify' "$WORK/mock.log" || fail "step_done was not gated on verify"
+	grep -q 'Verify FAILED' "$WORK/mock.log" || fail "first verify should fail"
+	grep -q 'Verify passed' "$WORK/mock.log" || fail "second verify should pass"
+	grep -q 'mr create --source-branch feature/pitch-gain --target-branch main' "$WORK/glab.log" || fail "glab mr create not called right"
+	grep -q -- '--draft' "$WORK/glab.log" || fail "draft flag missing"
+	git -C "$WORK/remote.git" rev-parse -q --verify feature/pitch-gain >/dev/null || fail "branch not pushed"
+	grep -q 'merge_requests/7' "$REPORT" || fail "MR link missing from report"
+	grep -q 'Pipeline: success' "$REPORT" || fail "pipeline result missing from report"
+	grep -q 'Checks (run by the plugin' "$REPORT" || fail "verify result missing from report"
+	grep -q '2 of 2 steps done' "$REPORT" || fail "plan not complete"
+elif [ "$SCENARIO" = graph ]; then
 	grep -q 'is still open' "$WORK/mock.log" || fail "no step nudge reached the model"
 	grep -q '"status": "done"' "$TASK/plan.json" || fail "plan.json has no finished step"
 	! grep -q '"status": "active"' "$TASK/plan.json" || fail "a step is still active"

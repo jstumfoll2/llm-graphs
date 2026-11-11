@@ -2,7 +2,7 @@
 
 OMP plugins that make long agent runs easy to follow. The goal is a lead agent you talk to in OMP that hands out work, keeps track of it in files, and tells you plainly what it did.
 
-It has two parts that install together: the **step list** keeps the agent on track, and the **report** tells you what it did.
+It has three parts that install together: the **step list** keeps the agent on track, **verify and MR** move testing and GitLab into code, and the **report** tells you what it did.
 
 ## Step list
 
@@ -16,6 +16,35 @@ The task's steps live in a file, not in the model's memory. Code decides what is
 - **Advisor capped.** The first advisor note during a step reaches the agent. Later ones in the same step are held back and listed in the report, which ends the advisor back-and-forth loop.
 - **One list.** Calls to OMP's own `todo` tool are refused with a pointer to the step list. Subagents can't move the lead's plan.
 - **Always in view.** The plan shows above the prompt and in the system prompt at every turn. `/plan` opens the full list.
+
+## Verify and merge request
+
+Your build and tests are run by the plugin, not typed by the model, and the model can't skip them.
+
+- **`verify` tool.** Runs the repo's configured checks in order (for example build, then unit tests), stopping at the first failure. Full output goes to the task folder; the model sees only the last 60 lines of the failing check. Progress lines appear every 30 seconds, so an hour-long build doesn't look stalled.
+- **Gate.** If files were edited since the last passing verify, `step_done` is refused until verify passes. Investigation-only steps aren't affected.
+- **Retry cap.** After 3 failed verifies on one step (configurable), verify refuses and tells the agent to mark the step blocked.
+- **`open_mr` tool.** Refuses unless verify passed, the branch isn't the target branch, and the task's files are committed. Then it pushes and runs `glab mr create` with a description built from the task records (summary, files, checks run, steps done). If an MR already exists for the branch, it finds it.
+- **`watch_pipeline` tool.** Polls `glab ci get` until the pipeline finishes, then returns each failed job's last 40 lines (full logs saved). The agent fixes, verifies, commits, pushes and watches again.
+- **`/verify`** runs the checks yourself; **`/verify setup`** opens this repo's config in an editor.
+
+### Repo config
+
+`~/.omp/llm-graphs/repos/<repo>.json` (or a `.llm-graphs.json` in the repo top if you want to share it):
+
+```json
+{
+  "verify": [
+    { "name": "build", "cmd": "make -j16", "timeout_min": 90 },
+    { "name": "unit tests", "cmd": "ctest --output-on-failure", "timeout_min": 30 }
+  ],
+  "max_attempts": 3,
+  "mr": { "target_branch": "develop", "reviewers": ["alice"], "labels": ["agent"], "draft": true },
+  "pipeline": { "poll_sec": 60, "max_wait_min": 120 }
+}
+```
+
+Leave out `mr` and the agent stops at "verified, ready for you". With no config, nothing is gated.
 
 ## Report
 
@@ -32,7 +61,7 @@ The agent writes a short, fixed-shape note after each step. A hook logs every ed
 
 ```sh
 # from GitHub (pin a tag)
-omp plugin install 'github:jstumfoll2/llm-graphs#v0.2.0'
+omp plugin install 'github:jstumfoll2/llm-graphs#v0.3.0'
 
 # or from a local clone
 omp plugin link ./llm-graphs
@@ -51,6 +80,8 @@ Restart OMP after installing.
 | `/report final` | Ask the agent to write the final summary |
 | `/report new <title>` | Start a new task (otherwise a task starts with your first prompt) |
 | `/report path` | Print the task folder |
+| `/verify` | Run the repo's checks now |
+| `/verify setup` | Create or edit this repo's verify and MR config |
 
 The report is laid out the same way every time: Summary, Needs your decision, Plan (each step with its evidence, plus held advisor notes), What changed (files and `git diff --stat`), Tests (latest result per command), Open questions, Step log, Activity.
 
@@ -64,6 +95,7 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | `OMP_GRAPH_MAX_NUDGES` | `3` | Nudges with no progress before it warns you instead |
 | `OMP_GRAPH_ADVISOR_PER_STEP` | `1` | Advisor notes the agent sees per step |
 | `OMP_GRAPH_KEEP_TODO` | unset | Set to `1` to allow OMP's own todo tool alongside the step list |
+| `OMP_GRAPHS_CONFIG_DIR` | `~/.omp/llm-graphs/repos` | Where per-repo verify and MR configs live |
 
 ### Task folder
 
@@ -71,6 +103,9 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 ~/.omp/llm-graphs/reports/<repo>/<task-id>/
   task.json      title, start time, git HEAD and files already modified at start
   plan.json      step list, queued asks, advisor notes
+  verify.jsonl   one line per verify run; verify/*.log holds the output (5 MB cap each)
+  mr.json        merge request link
+  pipeline.json  latest pipeline result
   ledger.jsonl   one line per edit, write or command
   steps.jsonl    one line per report_step
   summary.json   final summary
@@ -85,6 +120,9 @@ Files already modified before the task started are listed separately, since work
 extensions/report/index.ts   entry point: hooks, report tools, /report
 extensions/graph/plan.ts     step list rules (pure functions)
 extensions/graph/register.ts step tools, /ask, /plan, advisor gate, nudges
+extensions/verify/config.ts  per-repo config lookup
+extensions/verify/state.ts   verify, MR and pipeline records (pure helpers)
+extensions/verify/register.ts verify, open_mr, watch_pipeline, /verify
 extensions/report/store.ts   task folder reads and writes, cleanup
 extensions/report/render.ts  builds REPORT.md (pure function)
 test/*.test.ts               unit tests (bun test)
@@ -97,9 +135,10 @@ test/e2e/run.sh              real OMP + this plugin + a scripted mock model
 bun test test/                     # unit tests
 OMP=$(which omp) test/e2e/run.sh                  # end to end: report
 SCENARIO=graph OMP=$(which omp) test/e2e/run.sh   # end to end: step list
+SCENARIO=ship OMP=$(which omp) test/e2e/run.sh    # end to end: verify, MR, pipeline (fake glab)
 ```
 
-Tested with OMP 18.18.8.
+Tested with OMP 18.18.8. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
 
 ## Background
 

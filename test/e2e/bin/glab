@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fake glab for the end-to-end test. Logs calls; first pipeline poll says
+# running, then success.
+echo "glab $*" >> "${FAKE_GLAB_LOG:-/tmp/fake-glab.log}"
+case "$1 $2" in
+  "mr create") echo "Creating merge request for feature into main"; echo "https://gitlab.example.com/grp/repo/-/merge_requests/7" ;;
+  "mr view") echo '{"web_url":"https://gitlab.example.com/grp/repo/-/merge_requests/7"}' ;;
+  "ci get")
+    n_file="${FAKE_GLAB_LOG:-/tmp/fake-glab.log}.polls"; n=$(( $(cat "$n_file" 2>/dev/null || echo 0) + 1 )); echo $n > "$n_file"
+    if [ "$n" -lt 2 ]; then st=running; else st=success; fi
+    echo "{\"status\":\"$st\",\"web_url\":\"https://gitlab.example.com/grp/repo/-/pipelines/99\",\"jobs\":[{\"id\":1,\"name\":\"unit\",\"stage\":\"test\",\"status\":\"$st\"}]}" ;;
+  "ci trace") echo "job log" ;;
+  *) echo "fake glab: unsupported $*" >&2; exit 1 ;;
+esac
