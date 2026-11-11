@@ -1,0 +1,13 @@
+{
+	"name": "omp-llm-graphs",
+	"version": "0.1.0",
+	"description": "OMP plugin: plain task reports and a change ledger, so long agent runs are easy to review",
+	"type": "module",
+	"omp": {
+		"extensions": ["./extensions/report/index.ts"]
+	},
+	"files": ["extensions", "README.md"],
+	"scripts": {
+		"test": "bun test test/"
+	}
+}
