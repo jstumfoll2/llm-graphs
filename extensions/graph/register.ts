@@ -16,6 +16,7 @@ import {
 	type PlanStep,
 	planLines,
 	remaining,
+	reopenStep,
 	savePlan,
 	setPlan,
 } from "./plan";
@@ -37,7 +38,8 @@ const RULES = `## Step list (llm-graphs)
 - For any task with more than one step, first call plan_steps with the steps in order. Include steps for writing tests, running them, and reporting.
 - Work on the active step only. When it is finished, call step_done with evidence: what you ran or checked and what it showed.
 - Found extra work? Call add_steps; it is added after the existing steps. Never drop a step the user asked for.
-- If a step cannot be done, call step_blocked with a one-sentence reason and move on.
+- A step too big to do in one go? Call add_steps with under=<its id> to split it into substeps. They run first, then you close the step itself with step_done.
+- If a step cannot be done, call step_blocked with a one-sentence reason and move on. When the blocker is cleared (for example the user answered), call step_reopen to pick it back up.
 - Do not use a separate todo list; this step list is the todo list.`;
 
 export function registerGraph(
@@ -109,14 +111,22 @@ export function registerGraph(
 		label: "Add steps",
 		loadMode: "essential",
 		approval: "read",
-		description: "Append steps you discovered. They go after all existing steps; nothing is removed or reordered.",
-		parameters: z.object({ steps: z.array(z.string()), why: z.string().describe("One sentence: why these steps are needed") }),
+		description:
+			"Add steps you discovered, at most 20 per call. Without `under` they go after all existing steps. With `under`, they become substeps of that step: they run first, and that step can't be closed until they are. Nothing is removed or reordered.",
+		parameters: z.object({
+			steps: z.array(z.string()),
+			why: z.string().describe("One sentence: why these steps are needed"),
+			under: z.number().int().optional().describe("Id of an open top-level step to split into these substeps"),
+		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			await deps.ensureTask(ctx, params.steps[0] ?? "Untitled task");
 			const p = plan()!;
-			const added = addSteps(p, params.steps);
+			const r = addSteps(p, params.steps, "added", params.under);
+			if (r.error) return { isError: true, content: [{ type: "text", text: r.error }] };
 			save(ctx);
-			return { content: [{ type: "text", text: `Added steps ${added.map(s => s.id).join(", ")}. Active step: ${active(p)?.id ?? "none"}.` }] };
+			const cur = active(p);
+			const where = params.under !== undefined ? ` as substeps of step ${params.under}` : "";
+			return { content: [{ type: "text", text: `Added steps ${r.added.map(s => s.id).join(", ")}${where}. Active step: ${cur ? `${cur.id}. ${cur.title}` : "none"}.` }] };
 		},
 	});
 
@@ -156,6 +166,25 @@ export function registerGraph(
 		},
 	});
 
+	pi.registerTool({
+		name: "step_reopen",
+		label: "Reopen step",
+		loadMode: "essential",
+		approval: "read",
+		description:
+			"Reopen a blocked step once its blocker is cleared. It becomes the active step now; the step that was active waits and comes back after it.",
+		parameters: z.object({ id: z.number().int(), note: z.string().describe("One sentence: what cleared the blocker") }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const p = plan();
+			if (!p?.steps.length) return { isError: true, content: [{ type: "text", text: "No plan yet." }] };
+			const r = reopenStep(p, params.id, params.note);
+			if (r.error) return { isError: true, content: [{ type: "text", text: r.error }] };
+			save(ctx);
+			const paused = r.paused ? ` Step ${r.paused.id} (${r.paused.title}) is paused and comes back after it.` : "";
+			return { content: [{ type: "text", text: `Step ${params.id} reopened and active: ${r.step!.title}.${paused}` }] };
+		},
+	});
+
 	// ---------- commands ----------
 
 	pi.registerCommand("ask", {
@@ -177,8 +206,18 @@ export function registerGraph(
 	});
 
 	pi.registerCommand("plan", {
-		description: "Show the step list",
-		handler: async (_args, ctx) => {
+		description: "Show the step list. `/plan reopen <id> <what cleared it>` reopens a blocked step.",
+		handler: async (args, ctx) => {
+			const m = (args ?? "").trim().match(/^reopen\s+(\d+)\s*(.*)$/s);
+			if (m) {
+				const p = plan();
+				const r = p ? reopenStep(p, Number(m[1]), m[2] || "Reopened by the user from /plan.") : { error: "No plan yet." };
+				if (!r.error) save(ctx);
+				const msg = r.error ?? `Step ${m[1]} reopened and active.`;
+				if (ctx.hasUI) ctx.ui.notify(msg, r.error ? "warning" : "info");
+				else console.log(msg);
+				return;
+			}
 			const p = plan();
 			const text = p?.steps.length ? planLines(p, 50).join("\n") : "No plan yet.";
 			if (ctx.hasUI) {
@@ -200,10 +239,10 @@ export function registerGraph(
 	// to the step list, and subagents may not move the lead's plan. (Blocking
 	// calls instead of setActiveTools, which stops print mode from exiting in
 	// OMP 18.18.)
-	const PLAN_TOOLS = new Set(["plan_steps", "add_steps", "step_done", "step_blocked"]);
+	const PLAN_TOOLS = new Set(["plan_steps", "add_steps", "step_done", "step_blocked", "step_reopen"]);
 	pi.on("tool_call", async (event, ctx) => {
 		if (HIDE_TODO && event.toolName === "todo" && ctx.agent?.kind !== "sub" && ctx.agent?.id !== "advisor") {
-			return { block: true, reason: "Use the step list instead: plan_steps, add_steps, step_done, step_blocked." };
+			return { block: true, reason: "Use the step list instead: plan_steps, add_steps, step_done, step_blocked, step_reopen." };
 		}
 		if (PLAN_TOOLS.has(event.toolName) && ctx.agent?.kind === "sub") {
 			return { block: true, reason: "Only the lead agent moves the step list. Finish your assignment and report back." };

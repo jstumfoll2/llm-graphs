@@ -80,7 +80,9 @@ export function slug(text: string, max = 40): string {
 export function newTaskId(title: string, now = new Date()): string {
 	const pad = (n: number) => String(n).padStart(2, "0");
 	const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-	return `${stamp}-${slug(title)}`;
+	// a short random part, so two sessions starting the same task in the same second still get separate folders
+	const rand = Math.random().toString(16).slice(2, 6).padEnd(4, "0");
+	return `${stamp}-${rand}-${slug(title)}`;
 }
 
 export class TaskStore {
@@ -159,11 +161,26 @@ export class TaskStore {
 	}
 }
 
+/** Newest modification time of the files directly in a task folder. */
+function lastWrite(dir: string): number {
+	let t = 0;
+	for (const f of fs.readdirSync(dir)) {
+		try {
+			t = Math.max(t, fs.statSync(path.join(dir, f)).mtimeMs);
+		} catch {
+			// removed while we looked
+		}
+	}
+	return t;
+}
+
 /**
  * Keep only the newest `keep` task folders per repo. The runner, not the
- * model, owns cleanup, so disk use stays bounded.
+ * model, owns cleanup, so disk use stays bounded. A folder written to in the
+ * last `busyHours` is never removed, so a long task in another session that
+ * shares the repo is not deleted out from under it.
  */
-export function pruneTasks(root: string, repo: string, keep: number): string[] {
+export function pruneTasks(root: string, repo: string, keep: number, busyHours = 24, now = Date.now()): string[] {
 	const repoDir = path.join(root, slug(repo, 60));
 	if (!fs.existsSync(repoDir) || keep < 1) return [];
 	const dirs = fs
@@ -171,7 +188,12 @@ export function pruneTasks(root: string, repo: string, keep: number): string[] {
 		.filter(d => d.isDirectory())
 		.map(d => d.name)
 		.sort(); // ids start with a timestamp, so name order is age order
-	const removed = dirs.slice(0, Math.max(0, dirs.length - keep));
-	for (const name of removed) fs.rmSync(path.join(repoDir, name), { recursive: true, force: true });
+	const removed: string[] = [];
+	for (const name of dirs.slice(0, Math.max(0, dirs.length - keep))) {
+		const dir = path.join(repoDir, name);
+		if (now - lastWrite(dir) < busyHours * 3600_000) continue;
+		fs.rmSync(dir, { recursive: true, force: true });
+		removed.push(name);
+	}
 	return removed;
 }

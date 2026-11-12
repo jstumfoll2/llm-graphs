@@ -9,8 +9,10 @@
  *  - Nudges the agent once if it stops after real work without reporting.
  *  - `/report` builds one REPORT.md per task from those files.
  *
- * Subagents working in the same checkout write into the lead's current task,
- * so delegated work shows up in the same report.
+ * Subagents write into their lead's current task, so delegated work shows
+ * up in the same report. The link is kept in this OMP process only (subagents
+ * run in the lead's process), so two OMP sessions in one repo never share a
+ * task folder.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -19,7 +21,7 @@ import { active } from "../graph/plan";
 import { registerGraph } from "../graph/register";
 import { registerVerify } from "../verify/register";
 import { renderBrief, renderReport } from "./render";
-import { newTaskId, pruneTasks, reportRoot, type StepEntry, slug, TaskStore } from "./store";
+import { newTaskId, pruneTasks, reportRoot, type StepEntry, TaskStore } from "./store";
 
 const ENTRY_TYPE = "llmg-task"; // session entry that remembers the current task id
 const LOGGED_TOOLS = new Set(["edit", "write", "bash", "ast_edit"]);
@@ -27,6 +29,12 @@ const OWN_TOOLS = new Set(["report_step", "report_summary"]);
 
 const NUDGE_AFTER = Number(process.env.OMP_REPORT_NUDGE_AFTER ?? 3); // unreported edits/commands before a nudge
 const KEEP_TASKS = Number(process.env.OMP_REPORT_KEEP ?? 30); // task folders kept per repo
+
+/**
+ * Lead task per repo, shared with this process's subagents. On globalThis so
+ * it holds even if OMP loads a separate copy of this module for a subagent.
+ */
+const LEADS: Map<string, string> = ((globalThis as Record<symbol, unknown>)[Symbol.for("omp-llm-graphs.leads")] ??= new Map<string, string>()) as Map<string, string>;
 
 const RULES = `## Reporting (llm-graphs)
 - After each meaningful step (a finding, a change, a test run, a dead end), call report_step. Do not save it all for the end.
@@ -100,8 +108,9 @@ export default function reportExtension(pi: ExtensionAPI) {
 		repo = path.basename(repoTop);
 	}
 
-	function pointerFile(): string {
-		return path.join(root, slug(repo, 60), "CURRENT");
+	/** Key for this checkout in the process-wide lead table. */
+	function leadKey(): string {
+		return `${root}\0${repoTop}`;
 	}
 
 	// ---------- task lifecycle ----------
@@ -121,7 +130,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 			baseHead: (await git(ctx, ["rev-parse", "HEAD"]))?.trim(),
 			dirtyAtStart: [...dirty],
 		});
-		fs.writeFileSync(pointerFile(), `${id}\n`);
+		LEADS.set(leadKey(), id);
 		pi.appendEntry(ENTRY_TYPE, { id, repo });
 		pruneTasks(root, repo, KEEP_TASKS);
 		store = s;
@@ -138,11 +147,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		await detectRepo(ctx);
 		let id: string | undefined;
 		if (ctx.agent?.kind === "sub") {
-			try {
-				id = fs.readFileSync(pointerFile(), "utf8").trim();
-			} catch {
-				id = undefined;
-			}
+			id = LEADS.get(leadKey());
 		} else {
 			for (const entry of ctx.sessionManager.getBranch()) {
 				const e = entry as { type?: string; customType?: string; data?: { id?: string } };
@@ -154,7 +159,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		if (!s.exists()) return;
 		store = s;
 		statusAtLastStep = await statusPaths(ctx);
-		if (ctx.agent?.kind !== "sub") fs.writeFileSync(pointerFile(), `${id}\n`);
+		if (ctx.agent?.kind !== "sub") LEADS.set(leadKey(), id);
 		updateStatus(ctx);
 	}
 
@@ -172,6 +177,10 @@ export default function reportExtension(pi: ExtensionAPI) {
 		activeStep: () => {
 			const p = graph.plan();
 			return p ? active(p)?.id : undefined;
+		},
+		stepSince: () => {
+			const p = graph.plan();
+			return p ? active(p)?.reopenedAt : undefined;
 		},
 		stepsDone: () => graph.plan()?.steps.filter(s => s.status === "done").map(s => s.title) ?? [],
 		changedFiles: ctx => (store ? changedSinceStart(ctx, store) : Promise.resolve([])),
