@@ -35,6 +35,7 @@ describe("verify rules", () => {
 		expect(failuresForStep(runs, 1)).toBe(2);
 		expect(failuresForStep(runs, 2)).toBe(1);
 		expect(failuresForStep(runs, 3)).toBe(0);
+		expect(failuresForStep(runs, 1, "b")).toBe(1); // a reopen starts a fresh count
 	});
 
 	test("logs are capped to their tail", () => {

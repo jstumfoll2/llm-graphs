@@ -107,9 +107,9 @@ export class VerifyState {
 	}
 }
 
-/** Failed verify runs during this plan step. */
-export function failuresForStep(runs: VerifyRun[], step: number | undefined): number {
-	return runs.filter(r => !r.ok && r.step === step).length;
+/** Failed verify runs during this plan step, counting only runs since `since` (a reopen starts a fresh count). */
+export function failuresForStep(runs: VerifyRun[], step: number | undefined, since?: string): number {
+	return runs.filter(r => !r.ok && r.step === step && (!since || r.ts >= since)).length;
 }
 
 /**

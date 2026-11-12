@@ -76,7 +76,9 @@ elif [ "$SCENARIO" = graph ]; then
 	grep -q '"status": "done"' "$TASK/plan.json" || fail "plan.json has no finished step"
 	! grep -q '"status": "active"' "$TASK/plan.json" || fail "a step is still active"
 	grep -q '## Plan' "$REPORT" || fail "report missing plan section"
-	grep -q '2 of 2 steps done' "$REPORT" || fail "plan not complete in report"
+	grep -q '4 of 4 steps done' "$REPORT" || fail "plan not complete in report"
+	grep -q '↳ (part of 1) Write the new value' "$REPORT" || fail "substeps not shown under their step"
+	grep -q 'reopened 1x: The license server is back up now.' "$REPORT" || fail "reopen not recorded"
 else
 	grep -q 'Raised the pitch gain' "$TASK/steps.jsonl" || fail "step not recorded"
 	grep -q 'Confirm 1.25' "$REPORT" || fail "needs_you item missing"

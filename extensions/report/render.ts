@@ -102,8 +102,10 @@ export function renderReport(
 		out.push("| # | Step | Status | Evidence or reason |");
 		out.push("| --- | --- | --- | --- |");
 		for (const p of plan.steps) {
-			const note = (p.evidence ?? p.reason ?? "").replace(/\|/g, "/").replace(/\s+/g, " ");
-			const title = p.source === "inbox" ? `${p.title} (your ask)` : p.title;
+			const reopens = (p.history ?? []).filter(h => h.event === "reopened");
+			const past = reopens.length ? ` (blocked before, reopened ${reopens.length}x: ${reopens.map(h => h.text).join("; ")})` : "";
+			const note = `${p.evidence ?? p.reason ?? ""}${past}`.replace(/\|/g, "/").replace(/\s+/g, " ").trim();
+			const title = `${p.parent !== undefined ? `↳ (part of ${p.parent}) ` : ""}${p.title}${p.source === "inbox" ? " (your ask)" : ""}`.replace(/\|/g, "/");
 			out.push(`| ${p.id} | ${title} | ${p.status} | ${note} |`);
 		}
 		const held = plan.advisor.filter(a => !a.allowed);
