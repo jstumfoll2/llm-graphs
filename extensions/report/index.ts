@@ -18,7 +18,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { active } from "../graph/plan";
+import { registerCleanup } from "../cleanup/register";
 import { registerGraph } from "../graph/register";
+import { registerLead } from "../lead/register";
+import { registerMemory } from "../memory/register";
+import { loadConfig } from "../verify/config";
 import { registerVerify } from "../verify/register";
 import { renderBrief, renderReport } from "./render";
 import { newTaskId, pruneTasks, reportRoot, type StepEntry, TaskStore } from "./store";
@@ -187,6 +191,9 @@ export default function reportExtension(pi: ExtensionAPI) {
 		ensureTask,
 	});
 	const graph = registerGraph(pi, { getStore: () => store, ensureTask, gate: () => verify.gate() });
+	const lead = registerLead(pi, { repoDefault: () => (repo ? loadConfig(repo, repoTop).config?.lead === true : false) });
+	const memory = registerMemory(pi, { repo: () => repo, taskId: () => store?.info().id });
+	registerCleanup(pi, { reportRoot: root, currentTaskDir: () => store?.dir });
 
 	async function changedSinceStart(ctx: ExtensionContext, s: TaskStore): Promise<string[]> {
 		const info = s.info();
@@ -205,7 +212,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		const changedFiles = await changedSinceStart(ctx, s);
 		const diffStat = info.baseHead ? await git(ctx, ["diff", "--stat", info.baseHead]) : undefined;
 		const steps = s.steps();
-		const md = renderReport(info, steps, s.ledger(), s.summary(), { changedFiles, diffStat, ...verify.view() }, undefined, graph.plan());
+		const md = renderReport(info, steps, s.ledger(), s.summary(), { changedFiles, diffStat, ...verify.view(), lessons: memory.forTask(info.id) }, undefined, graph.plan());
 		return { file: s.writeReport(md), brief: renderBrief(info, steps, changedFiles.length) };
 	}
 
@@ -217,7 +224,9 @@ export default function reportExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!store && ctx.agent?.kind !== "sub") await startTask(ctx, event.prompt);
-		return { systemPrompt: [...event.systemPrompt, RULES, graph.promptBlock(), verify.promptBlock()].filter(Boolean) };
+		const parts = [RULES, graph.promptBlock(), verify.promptBlock(), memory.promptBlock()];
+		if (ctx.agent?.kind !== "sub") parts.push(lead.promptBlock());
+		return { systemPrompt: [...event.systemPrompt, ...parts.filter((x): x is string => !!x)] };
 	});
 
 	pi.on("tool_result", async (event, ctx) => {

@@ -1,12 +1,12 @@
 {
 	"name": "omp-llm-graphs",
-	"version": "0.4.0",
-	"description": "OMP plugin: plain task reports and a change ledger, so long agent runs are easy to review",
+	"version": "0.5.0",
+	"description": "OMP plugin: a step list kept by code, a verify loop and GitLab MR, a lead that hands work to workers, lessons that carry over, and plain task reports",
 	"type": "module",
 	"omp": {
 		"extensions": ["./extensions/report/index.ts"]
 	},
-	"files": ["extensions", "README.md"],
+	"files": ["extensions", "agents", "README.md"],
 	"scripts": {
 		"test": "bun test test/"
 	}

@@ -13,7 +13,8 @@
  *   ],
  *   "max_attempts": 3,
  *   "mr": { "target_branch": "develop", "reviewers": ["alice"], "labels": ["agent"], "draft": true },
- *   "pipeline": { "poll_sec": 60, "max_wait_min": 120 }
+ *   "pipeline": { "poll_sec": 60, "max_wait_min": 120 },
+ *   "lead": true
  * }
  */
 import * as fs from "node:fs";
@@ -40,6 +41,7 @@ export interface RepoConfig {
 	max_attempts: number;
 	mr?: MrConfig;
 	pipeline: { poll_sec: number; max_wait_min: number };
+	lead?: boolean; // lead mode on by default in this repo
 	source?: string; // file it was read from
 }
 
@@ -70,6 +72,7 @@ export function loadConfig(repo: string, repoTop: string): { config?: RepoConfig
 				max_attempts: raw.max_attempts ?? 3,
 				mr: raw.mr?.target_branch ? raw.mr : undefined,
 				pipeline: { poll_sec: raw.pipeline?.poll_sec ?? 60, max_wait_min: raw.pipeline?.max_wait_min ?? 120 },
+				lead: raw.lead === true ? true : undefined,
 				source: p,
 			},
 		};
@@ -84,6 +87,7 @@ export const CONFIG_TEMPLATE = `{
   ],
   "max_attempts": 3,
   "mr": { "target_branch": "develop", "reviewers": [], "labels": [], "draft": true },
-  "pipeline": { "poll_sec": 60, "max_wait_min": 120 }
+  "pipeline": { "poll_sec": 60, "max_wait_min": 120 },
+  "lead": false
 }
 `;

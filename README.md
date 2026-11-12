@@ -2,7 +2,7 @@
 
 OMP plugins that make long agent runs easy to follow. The goal is a lead agent you talk to in OMP that hands out work, keeps track of it in files, and tells you plainly what it did.
 
-It has three parts that install together: the **step list** keeps the agent on track, **verify and MR** move testing and GitLab into code, and the **report** tells you what it did.
+It has six parts that install together: the **step list** keeps the agent on track, **verify and MR** move testing and GitLab into code, **lead mode** makes the agent hand work to workers, **lessons** carry what it learned to the next task, **cleanup** keeps disk use bounded, and the **report** tells you what it did.
 
 ## Step list
 
@@ -42,11 +42,38 @@ Your build and tests are run by the plugin, not typed by the model, and the mode
   ],
   "max_attempts": 3,
   "mr": { "target_branch": "develop", "reviewers": ["alice"], "labels": ["agent"], "draft": true },
-  "pipeline": { "poll_sec": 60, "max_wait_min": 120 }
+  "pipeline": { "poll_sec": 60, "max_wait_min": 120 },
+  "lead": true
 }
 ```
 
 Leave out `mr` and the agent stops at "verified, ready for you". With no config, nothing is gated.
+
+## Lead mode
+
+The agent you talk to plans, hands each step to a worker, checks the worker's evidence, and reports. It doesn't edit files or run commands itself, so it stays on the plan instead of disappearing into one step for an hour.
+
+- **Workers.** Three OMP subagents ship in `agents/`: `llmg-investigate` (find and explain, read-only), `llmg-test` (write and run tests, doesn't touch the code under test), `llmg-fix` (make one change and run the focused tests, doesn't commit). Each starts with a fresh context holding only its assignment, and the lead waits for its reply.
+- **Enforced.** In lead mode the lead's `edit`, `write`, `ast_edit`, `bash` and `eval` calls are refused with a pointer to the workers. Single `git` or `glab` calls (no pipes or chaining) are still allowed, so the lead can commit and open the MR. Workers' edits land in the lead's ledger and report, and the verify gate still applies.
+- **Turning it on.** `/lead on` or `/lead off` for this session, `OMP_GRAPH_LEAD=1` everywhere, or `"lead": true` in the repo config. Off by default.
+
+## Lessons
+
+What the agent learns in one task ("the build needs `module load gcc/12`") carries to the next task in the same repo, but only becomes a rule once it has proven useful.
+
+- **`lesson_add` tool.** Saves one sentence as a tip. Duplicates are caught.
+- **`lesson_helped` tool.** When a tip saves time in a task, the agent says so. After a tip has helped in 2 tasks other than the one that wrote it (`OMP_GRAPHS_PROMOTE_AFTER`), it becomes a standing rule.
+- **In the prompt.** Standing rules, then up to 10 unproven tips marked as such. The list is fixed when a task starts, so nothing learned mid-task changes the agent's instructions until the next task.
+- **Yours to edit.** `/lessons` lists them. `/lessons add <rule>` adds a rule straight away, and `/lessons promote <id>` and `/lessons forget <id>` do what they say.
+- **Stored** in `~/.omp/llm-graphs/memory/<repo>.json`, outside your checkout. At most 100 tips are kept; unused old ones go first. The report lists the lessons a task added, used and promoted.
+
+## Storage cleanup
+
+Keeps OMP's own session files and this plugin's task folders under a size cap, so disk use can't creep up to hundreds of GB.
+
+- **Automatic.** At most once a day, in the background when a session starts, the oldest OMP sessions (each `.jsonl` with its artifacts folder) are removed until the total is under `OMP_GRAPHS_SESSION_CAP_GB` (default 20). Task folders are capped at `OMP_REPORT_CAP_GB` (default 5) as well as by count.
+- **Never removed:** anything written in the last `OMP_GRAPHS_SESSION_KEEP_DAYS` (default 3), the running session, pinned sessions, and the current task folder. OMP's shared blob store is measured but not touched. If the sessions folder isn't in OMP's usual layout (`.../sessions/<project>/`), it is left alone unless you set `OMP_GRAPHS_SESSIONS_DIR`.
+- **`/cleanup`** shows the sizes and what would go; **`/cleanup now`** does it. Set `OMP_GRAPHS_SESSION_CAP_GB=0` to turn session cleanup off.
 
 ## Report
 
@@ -89,6 +116,9 @@ Restart OMP after installing.
 | `/report path` | Print the task folder |
 | `/verify` | Run the repo's checks now |
 | `/verify setup` | Create or edit this repo's verify and MR config |
+| `/lead on` / `/lead off` | Turn lead mode on or off for this session |
+| `/lessons` | List lessons; `add <rule>`, `promote <id>`, `forget <id>` |
+| `/cleanup` | Show disk use and what cleanup would remove; `/cleanup now` runs it |
 
 The report is laid out the same way every time: Summary, Needs your decision, Plan (each step with its evidence, plus held advisor notes), What changed (files and `git diff --stat`), Tests (latest result per command), Open questions, Step log, Activity.
 
@@ -103,6 +133,13 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | `OMP_GRAPH_ADVISOR_PER_STEP` | `1` | Advisor notes the agent sees per step |
 | `OMP_GRAPH_KEEP_TODO` | unset | Set to `1` to allow OMP's own todo tool alongside the step list |
 | `OMP_GRAPHS_CONFIG_DIR` | `~/.omp/llm-graphs/repos` | Where per-repo verify and MR configs live |
+| `OMP_GRAPH_LEAD` | unset | `1` turns lead mode on, `0` forces it off |
+| `OMP_GRAPHS_MEMORY_DIR` | `~/.omp/llm-graphs/memory` | Where lessons live |
+| `OMP_GRAPHS_PROMOTE_AFTER` | `2` | Other tasks a tip must help in before it becomes a rule |
+| `OMP_GRAPHS_SESSION_CAP_GB` | `20` | Size cap for OMP's session files; `0` turns session cleanup off |
+| `OMP_GRAPHS_SESSION_KEEP_DAYS` | `3` | Files written within this many days are never removed |
+| `OMP_REPORT_CAP_GB` | `5` | Size cap for task folders |
+| `OMP_GRAPHS_SESSIONS_DIR` | from OMP | Sessions folder to clean, if not in OMP's usual layout |
 
 ### Task folder
 
@@ -130,6 +167,12 @@ extensions/graph/register.ts step tools, /ask, /plan, advisor gate, nudges
 extensions/verify/config.ts  per-repo config lookup
 extensions/verify/state.ts   verify, MR and pipeline records (pure helpers)
 extensions/verify/register.ts verify, open_mr, watch_pipeline, /verify
+extensions/lead/register.ts  lead mode: tool refusals, /lead, lead prompt
+extensions/memory/lessons.ts lessons rules (pure functions)
+extensions/memory/register.ts lesson tools, /lessons
+extensions/cleanup/sizes.ts  disk use and cleanup plan (pure planning)
+extensions/cleanup/register.ts daily background cleanup, /cleanup
+agents/*.md                  the three workers lead mode hands steps to
 extensions/report/store.ts   task folder reads and writes, cleanup
 extensions/report/render.ts  builds REPORT.md (pure function)
 test/*.test.ts               unit tests (bun test)
@@ -143,6 +186,7 @@ bun test test/                     # unit tests
 OMP=$(which omp) test/e2e/run.sh                  # end to end: report
 SCENARIO=graph OMP=$(which omp) test/e2e/run.sh   # end to end: step list
 SCENARIO=ship OMP=$(which omp) test/e2e/run.sh    # end to end: verify, MR, pipeline (fake glab)
+SCENARIO=lead OMP=$(which omp) test/e2e/run.sh    # end to end: lead hands a step to a real worker, lessons
 ```
 
 Tested with OMP 18.18.8. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
