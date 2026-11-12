@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check: real OMP + this plugin + a scripted mock model.
 # Needs: omp on PATH (or OMP=/path/to/omp), node, git.
-# SCENARIO=report (default), graph, or ship (verify + fake glab).
+# SCENARIO=report (default), graph, ship (verify + fake glab), or lead (workers + lessons).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN="$(cd "$HERE/../.." && pwd)"
@@ -9,6 +9,7 @@ OMP="${OMP:-omp}"
 SCENARIO="${SCENARIO:-report}"
 [ "$SCENARIO" = graph ] && export SCRIPT="$HERE/graph-script.json"
 [ "$SCENARIO" = ship ] && export SCRIPT="$HERE/ship-script.json"
+[ "$SCENARIO" = lead ] && export SCRIPT="$HERE/lead-script.json"
 WORK="$(mktemp -d)"
 trap 'kill $MOCK 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 
@@ -46,9 +47,20 @@ if [ "$SCENARIO" = ship ]; then
   "pipeline": { "poll_sec": 1, "max_wait_min": 1 } }
 CFG
 fi
+EXT="$PLUGIN/extensions/report/index.ts"
+if [ "$SCENARIO" = lead ]; then
+	export OMP_GRAPH_LEAD=1
+	EXT="$PLUGIN" # the package folder, so OMP also finds agents/
+	# a tip from an older task that already helped once; helping here makes it a rule
+	mkdir -p "$HOME/.omp/llm-graphs/memory"
+	cat > "$HOME/.omp/llm-graphs/memory/repo.json" <<'MEM'
+{ "nextId": 2, "lessons": [ { "id": 1, "text": "Changing gain.txt needs no rebuild, it is read at run time.", "status": "candidate", "source": "agent",
+  "addedAt": "2026-11-01T00:00:00Z", "addedIn": "old-1", "helped": [ { "task": "old-2", "ts": "2026-11-02T00:00:00Z", "how": "Skipped a rebuild." } ] } ] }
+MEM
+fi
 
-"$OMP" -p --no-session --no-pty --yolo --model mock/mock --extension "$PLUGIN/extensions/report/index.ts" \
-	"Raise the pitch gain to 1.25" > "$WORK/out.txt" 2> "$WORK/err.txt" || { cat "$WORK/err.txt"; exit 1; }
+"$OMP" -p --no-session --no-pty --yolo --model mock/mock --extension "$EXT" \
+	"Raise the pitch gain to 1.25" < /dev/null > "$WORK/out.txt" 2> "$WORK/err.txt" || { cat "$WORK/err.txt"; exit 1; }
 
 kill $MOCK; wait $MOCK 2>/dev/null || true
 REPORT="$(find "$OMP_REPORT_DIR" -name REPORT.md | head -1)"
@@ -57,7 +69,7 @@ fail() { echo "FAIL: $1 (work dir $WORK)"; echo "--- omp stdout"; cat "$WORK/out
 
 [ -n "$REPORT" ] || fail "no REPORT.md written"
 grep -q '"tool":"write"' "$TASK/ledger.jsonl" || fail "write not in ledger"
-[ "$SCENARIO" = ship ] || grep -q 'since your last report_step' "$WORK/mock.log" || fail "no report nudge reached the model"
+[ "$SCENARIO" = ship ] || [ "$SCENARIO" = lead ] || grep -q 'since your last report_step' "$WORK/mock.log" || fail "no report nudge reached the model"
 grep -q '## Needs your decision' "$REPORT" || fail "report missing decision section"
 grep -q 'gain.txt' "$REPORT" || fail "changed file missing"
 if [ "$SCENARIO" = ship ]; then
@@ -79,6 +91,15 @@ elif [ "$SCENARIO" = graph ]; then
 	grep -q '4 of 4 steps done' "$REPORT" || fail "plan not complete in report"
 	grep -q '↳ (part of 1) Write the new value' "$REPORT" || fail "substeps not shown under their step"
 	grep -q 'reopened 1x: The license server is back up now.' "$REPORT" || fail "reopen not recorded"
+elif [ "$SCENARIO" = lead ]; then
+	grep -q "Lead mode: you don" "$WORK/mock.log" || fail "the lead's own write was not refused"
+	grep -q 'gain = 1.25' gain.txt || fail "the worker's change is missing"
+	! grep -q '9.99' gain.txt || fail "the lead's write went through"
+	grep -q '"tool":"write","path":"gain.txt"' "$TASK/ledger.jsonl" || fail "worker edit not in the lead's ledger"
+	grep -q '## Lessons' "$REPORT" || fail "report missing lessons"
+	grep -q 'Became standing rules in this task' "$REPORT" || fail "lesson 1 was not promoted"
+	grep -q 'pitch gain lives only in gain.txt' "$HOME/.omp/llm-graphs/memory/repo.json" || fail "new lesson not saved"
+	grep -q '2 of 2 steps done' "$REPORT" || fail "plan not complete"
 else
 	grep -q 'Raised the pitch gain' "$TASK/steps.jsonl" || fail "step not recorded"
 	grep -q 'Confirm 1.25' "$REPORT" || fail "needs_you item missing"

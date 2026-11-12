@@ -13,6 +13,7 @@ export interface GitView {
 	lastVerify?: VerifyRun; // latest run of the repo's checks, by code
 	mrUrl?: string;
 	pipeline?: PipelineRecord;
+	lessons?: { added: string[]; helped: string[]; promoted: string[] };
 }
 
 function when(iso: string): string {
@@ -147,6 +148,15 @@ export function renderReport(
 		out.push("");
 		out.push(bullets(questions));
 		out.push("");
+	}
+
+	const ls = git.lessons;
+	if (ls && (ls.added.length || ls.helped.length)) {
+		out.push("## Lessons");
+		out.push("");
+		if (ls.promoted.length) out.push("Became standing rules in this task:", bullets(ls.promoted), "");
+		if (ls.helped.length) out.push("Lessons that helped:", bullets(ls.helped), "");
+		if (ls.added.length) out.push("New tips saved (unproven until they help in other tasks):", bullets(ls.added), "");
 	}
 
 	out.push("## Step log");
