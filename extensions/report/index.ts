@@ -15,7 +15,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { active } from "../graph/plan";
 import { registerGraph } from "../graph/register";
+import { registerVerify } from "../verify/register";
 import { renderBrief, renderReport } from "./render";
 import { newTaskId, pruneTasks, reportRoot, type StepEntry, slug, TaskStore } from "./store";
 
@@ -162,10 +164,20 @@ export default function reportExtension(pi: ExtensionAPI) {
 		ctx.ui.setStatus("llmg-report", `report: ${steps} step${steps === 1 ? "" : "s"}`);
 	}
 
-	const graph = registerGraph(pi, {
+	const ensureTask = async (ctx: ExtensionContext, title: string) => store ?? startTask(ctx, title);
+	// verify and graph refer to each other through these closures
+	const verify = registerVerify(pi, {
 		getStore: () => store,
-		ensureTask: async (ctx, title) => store ?? startTask(ctx, title),
+		repo: () => ({ name: repo, top: repoTop }),
+		activeStep: () => {
+			const p = graph.plan();
+			return p ? active(p)?.id : undefined;
+		},
+		stepsDone: () => graph.plan()?.steps.filter(s => s.status === "done").map(s => s.title) ?? [],
+		changedFiles: ctx => (store ? changedSinceStart(ctx, store) : Promise.resolve([])),
+		ensureTask,
 	});
+	const graph = registerGraph(pi, { getStore: () => store, ensureTask, gate: () => verify.gate() });
 
 	async function changedSinceStart(ctx: ExtensionContext, s: TaskStore): Promise<string[]> {
 		const info = s.info();
@@ -184,7 +196,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		const changedFiles = await changedSinceStart(ctx, s);
 		const diffStat = info.baseHead ? await git(ctx, ["diff", "--stat", info.baseHead]) : undefined;
 		const steps = s.steps();
-		const md = renderReport(info, steps, s.ledger(), s.summary(), { changedFiles, diffStat }, undefined, graph.plan());
+		const md = renderReport(info, steps, s.ledger(), s.summary(), { changedFiles, diffStat, ...verify.view() }, undefined, graph.plan());
 		return { file: s.writeReport(md), brief: renderBrief(info, steps, changedFiles.length) };
 	}
 
@@ -196,7 +208,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!store && ctx.agent?.kind !== "sub") await startTask(ctx, event.prompt);
-		return { systemPrompt: [...event.systemPrompt, RULES, graph.promptBlock()] };
+		return { systemPrompt: [...event.systemPrompt, RULES, graph.promptBlock(), verify.promptBlock()].filter(Boolean) };
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
