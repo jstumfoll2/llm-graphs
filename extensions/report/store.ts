@@ -12,6 +12,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { Question } from "../screen/view";
 
 export interface TaskInfo {
 	id: string;
@@ -87,7 +88,8 @@ export interface StepEntry {
 export interface Summary {
 	ts: string;
 	overview: string;
-	needsYou: string[];
+	needsYou: string[]; // older summaries; new ones use questions
+	questions?: Question[];
 	mrLink?: string;
 }
 

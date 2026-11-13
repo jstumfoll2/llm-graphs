@@ -125,6 +125,8 @@ Restart OMP after installing.
 | `/report final` | Ask the agent to write the final summary |
 | `/report new <title>` | Start a new task (otherwise a task starts with your first prompt) |
 | `/report path` | Print the task folder |
+| `/report hide` | Clear the pinned final report |
+| `/jump` | Go back to one of your directions or an earlier report, newest first |
 | `/verify` | Run the repo's checks now |
 | `/verify setup` | Create or edit this repo's verify and MR config |
 | `/lead on` / `/lead off` | Turn lead mode on or off for this session |
@@ -156,6 +158,7 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | `OMP_GRAPHS_DISABLE` | `lead,verify,lessons` under Firstmate, else empty | Parts to turn off: any of `lead`, `verify` (also `open_mr` and `watch_pipeline`), `lessons`, `cleanup`. Set it, even to empty, to override the default |
 | `OMP_GRAPHS_FIRSTMATE` | auto | `0` turns the Firstmate integration off even when Firstmate launched this omp |
 | `OMP_GRAPHS_FM_DONE` | unset | `1` writes a `done:` status line when `report_summary` closes a task with every step done |
+| `OMP_GRAPHS_FOLD_LINES` | `30` | Finished replies longer than this are folded on screen (needs `extensionRenderers.assistantText`); `0` turns it off |
 | `OMP_GRAPHS_INBOX_POLL_SEC` | `5` | How often an idle worker checks Firstmate's steering inbox |
 | `OMP_GRAPHS_FM_ROOT` | `FM_ROOT`, else the Firstmate home | Where to find `bin/fm-busy-event.sh` |
 
@@ -171,11 +174,32 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
   ledger.jsonl   one line per edit, write or command
   steps.jsonl    one line per report_step
   plan.md        the whole step list in plain text, rewritten on every change
+  timeline.md    your directions and every final report, in order
   summary.json   final summary
   REPORT.md      built by /report (unless OMP_GRAPHS_REPORT_FILE points elsewhere)
 ```
 
 Files already modified before the task started are listed separately, since work happens in place in an existing checkout.
+
+## The omp window
+
+One final report, held on screen, with the questions for you spelled out.
+
+- **One report, not three.** `report_summary` saves a draft. The card appears only when the agent has really finished: if an advisor note or a nudge sends it back to work first, the fix goes into the same report. A later `report_summary` replaces the card; the agent is told not to post corrections or summaries in chat.
+- **Pinned above the prompt.** The card shows the outcome, `NEEDS YOU` with each question, and the full paths of `REPORT.md` and `timeline.md`, each alone on a line so ctrl+click in a VS Code terminal opens it (a path wider than the terminal wraps and can't be clicked whole). It stays until the next report or `/report hide`. One short `■ Final report …` line also goes in the transcript, so scrolling back finds it.
+- **Explicit questions.** `report_summary` takes `questions`: one decision each, ending in `?`, with options and a recommendation. Indirect asks ("Let me know if you'd like…"), two questions in one, or a recommendation that isn't one of the options are refused with the reason, so the agent rewrites them. They are shown as `Q1. … Options: (a) … (b) … Recommended: …` and you can answer `Q1 a`.
+- **Jump back.** `/jump` lists your directions and every report, newest first; pick one to read it in full. `timeline.md` in the task folder holds the same, in order, for VS Code. Firstmate's own notices are not listed as your directions.
+- **Less noise (optional).** With omp's `extensionRenderers` settings on, finished replies longer than 30 lines (`OMP_GRAPHS_FOLD_LINES`, `0` to turn off) are drawn as their first 4 lines plus a pointer to `/jump`, and advisor cards are drawn as one row you can expand. Display only: the model and the session keep everything. In `~/.omp/agent/config.yml`:
+
+```yaml
+extensionRenderers:
+  assistantText: true        # fold long replies
+  transcriptPresenters: true # advisor cards as one row
+display:
+  advisorCollapsedLines: 1   # omp's own setting: shorter advisor cards everywhere
+```
+
+What it can't do yet: the one-line notices Firstmate types into the first mate's session are user messages, and omp gives extensions no way to fold user messages. See [docs/firstmate.md](docs/firstmate.md#the-first-mates-own-window).
 
 ## Firstmate workers
 
@@ -207,6 +231,8 @@ extensions/cleanup/register.ts daily background cleanup, /cleanup
 extensions/firstmate/fm.ts   Firstmate's inbox, status, busy-event and state files (pure helpers)
 extensions/firstmate/register.ts worker mode: inbox delivery, status lines, progress, state file
 extensions/parts.ts          which parts are on (OMP_GRAPHS_DISABLE, Firstmate defaults)
+extensions/screen/view.ts    final report card, question rules, folding, timeline (pure)
+extensions/screen/register.ts pinned card, /jump, folding and advisor rows
 agents/*.md                  the three workers lead mode hands steps to
 extensions/report/store.ts   task folder reads and writes, cleanup
 extensions/report/render.ts  builds REPORT.md (pure function)

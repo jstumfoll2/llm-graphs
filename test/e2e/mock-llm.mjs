@@ -20,6 +20,17 @@ const defaultScript = [
 		args: {
 			overview:
 				"Raised the pitch gain to 1.25 in gain.txt. The mock test suite passed. Nothing else changed and no merge request was opened in this test run.",
+			questions: [{ ask: "Let me know if you would like me to open a merge request." }],
+		},
+	},
+	{
+		tool: "report_summary",
+		args: {
+			overview:
+				"Raised the pitch gain to 1.25 in gain.txt. The mock test suite passed. Nothing else changed and no merge request was opened in this test run.",
+			questions: [
+				{ ask: "Open a draft merge request to develop now?", options: ["Yes, open it", "No, I will review locally first"], recommend: "Yes, open it", why: "The change is one line and the tests passed." },
+			],
 		},
 	},
 	{ text: "All done." },

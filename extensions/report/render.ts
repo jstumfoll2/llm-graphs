@@ -4,6 +4,7 @@
  * decisions first, then what changed, then tests, then the step log.
  */
 import type { Plan } from "../graph/plan";
+import { questionLines } from "../screen/view";
 import type { PipelineRecord, VerifyRun } from "../verify/state";
 import { type LedgerEntry, outsideRepo, type StepEntry, type Summary, type TaskInfo, type TestRun } from "./store";
 
@@ -104,7 +105,10 @@ export function renderReport(
 	const needsYou = dedupe([...(summary?.needsYou ?? []), ...steps.flatMap(s => s.needsYou)]);
 	out.push("## Needs your decision");
 	out.push("");
-	out.push(needsYou.length ? bullets(needsYou) : "Nothing.");
+	const qs = summary?.questions ?? [];
+	if (qs.length) out.push("```", ...questionLines(qs), "```");
+	if (needsYou.length) out.push(...(qs.length ? ["", "Also raised during the work:"] : []), bullets(needsYou));
+	if (!qs.length && !needsYou.length) out.push("Nothing.");
 	out.push("");
 
 	if (plan?.steps.length) {

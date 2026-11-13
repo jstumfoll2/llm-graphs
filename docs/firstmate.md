@@ -79,6 +79,13 @@ The same goes for secondmates, which run in their own home and are not marked as
 
 If your fork has a note like "no repo config exists for any checkout" (for example `docs/llm-graphs-step-list.md`), replace it. That was a convention. Now it is enforced in two places: inside Firstmate workers, `verify`/`open_mr`/`watch_pipeline` aren't registered at all, and everywhere else a `.llm-graphs.json` in the checkout is ignored unless `OMP_GRAPHS_TRUST_REPO_CONFIG=1`.
 
+## The first mate's own window
+
+In the first mate's omp session the plugin pins one final report above the prompt, with explicit questions and clickable paths, and `/jump` goes back to your directions and earlier reports (see the README, "The omp window"). Two things only Firstmate can change:
+
+- **The one-line notices.** Firstmate's omp watcher (`.omp/extensions/fm-primary-omp-watch.ts`) delivers wakes with `pi.sendUserMessage(...)`, so they are user messages, and omp lets extensions fold tool calls and custom messages but not user messages. Firstmate's `/calm` hides these rows on Pi and Claude Code only. Folding them in omp would take either an omp feature (a presenter for user messages) or a change in that watcher to deliver wakes as custom messages, which changes how the first mate sees them. That needs care and testing in your fork, so it is not done here.
+- **Wording.** The questions in the pinned card follow a fixed shape that the plugin enforces. The first mate's other chat follows `AGENTS.md` section 9 ("Escalation and captain etiquette"). If its asks are still hard to read, add a rule there, for example: "End every message that needs the captain with numbered questions in the form `Q1. <decision>? Options: (a) … (b) … Recommended: (a), because …`."
+
 ## What to stop using in a fleet
 
 | Part | Why | How |
