@@ -199,7 +199,7 @@ display:
   advisorCollapsedLines: 1   # omp's own setting: shorter advisor cards everywhere
 ```
 
-What it can't do yet: the one-line notices Firstmate types into the first mate's session are user messages, and omp gives extensions no way to fold user messages. See [docs/firstmate.md](docs/firstmate.md#the-first-mates-own-window).
+The one-line notices Firstmate's watcher adds to the first mate's session are user messages, which no omp extension can fold. To turn them into one line that updates in place, apply [`firstmate/omp-wake-widget.patch`](firstmate/README.md) to your Firstmate checkout.
 
 ## Firstmate workers
 
@@ -231,6 +231,7 @@ extensions/cleanup/register.ts daily background cleanup, /cleanup
 extensions/firstmate/fm.ts   Firstmate's inbox, status, busy-event and state files (pure helpers)
 extensions/firstmate/register.ts worker mode: inbox delivery, status lines, progress, state file
 extensions/parts.ts          which parts are on (OMP_GRAPHS_DISABLE, Firstmate defaults)
+firstmate/                   a patch for Firstmate itself (one updating wake line), with its own README
 extensions/screen/view.ts    final report card, question rules, folding, timeline (pure)
 extensions/screen/register.ts pinned card, /jump, folding and advisor rows
 agents/*.md                  the three workers lead mode hands steps to
@@ -249,6 +250,7 @@ SCENARIO=graph OMP=$(which omp) test/e2e/run.sh   # end to end: step list
 SCENARIO=ship OMP=$(which omp) test/e2e/run.sh    # end to end: verify, MR, pipeline (fake glab)
 SCENARIO=lead OMP=$(which omp) test/e2e/run.sh    # end to end: lead hands a step to a real worker, lessons
 SCENARIO=firstmate OMP=$(which omp) test/e2e/run.sh  # end to end: worker under a fake Firstmate home
+FIRSTMATE=/path/to/firstmate test/e2e/fm-wake-widget.sh  # the Firstmate wake patch, real omp + tmux
 ```
 
 Tested with OMP 18.18.8 and 18.20.0. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
