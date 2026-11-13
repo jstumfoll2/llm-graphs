@@ -97,6 +97,31 @@ export function reportRoot(): string {
 	return path.join(os.homedir(), ".omp", "llm-graphs", "reports");
 }
 
+/**
+ * Where /report and report_summary write the report. OMP_GRAPHS_REPORT_FILE is
+ * a path template, so the report can go wherever your other tools expect it:
+ *   {task_dir}  this task's folder            {task}   its id
+ *   {repo}      repo folder name              {date}   YYYY-MM-DD
+ *   {fm_task}   Firstmate task id             {fm_home} Firstmate home (parent of state/)
+ *   {fm_state}  Firstmate state folder        {env:NAME} any environment variable
+ * Default: {task_dir}/REPORT.md. A placeholder with no value (say {fm_task}
+ * outside Firstmate) falls back to the default, so a report is never lost.
+ */
+export function reportFile(vars: Record<string, string | undefined>, env: NodeJS.ProcessEnv = process.env): string {
+	const fallback = path.join(vars.task_dir ?? ".", "REPORT.md");
+	const tpl = env.OMP_GRAPHS_REPORT_FILE?.trim();
+	if (!tpl) return fallback;
+	let missing = false;
+	const out = tpl.replace(/\{(env:)?([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, isEnv: string | undefined, name: string) => {
+		const v = isEnv ? env[name] : vars[name];
+		if (!v) missing = true;
+		return v ?? "";
+	});
+	if (missing) return fallback;
+	const abs = out.startsWith("~/") ? path.join(os.homedir(), out.slice(2)) : out;
+	return path.isAbsolute(abs) ? abs : path.join(vars.task_dir ?? ".", abs);
+}
+
 export function slug(text: string, max = 40): string {
 	const s = text
 		.toLowerCase()
@@ -184,10 +209,11 @@ export class TaskStore {
 		return fs.existsSync(p) ? (JSON.parse(fs.readFileSync(p, "utf8")) as Summary) : undefined;
 	}
 
-	writeReport(markdown: string): string {
-		const p = this.file("REPORT.md");
-		fs.writeFileSync(p, markdown);
-		return p;
+	/** Writes the report to `target` (default: REPORT.md in the task folder). */
+	writeReport(markdown: string, target = this.file("REPORT.md")): string {
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		fs.writeFileSync(target, markdown);
+		return target;
 	}
 }
 

@@ -46,7 +46,12 @@ const server = http.createServer((req, res) => {
 		}
 		const body = JSON.parse(raw || "{}");
 		const step = script[Math.min(n, script.length - 1)];
-		log.push({ n, lastRole: body.messages?.at(-1)?.role, lastText: JSON.stringify(body.messages?.at(-1)?.content ?? "").slice(0, 200) });
+		log.push({
+			n,
+			lastRole: body.messages?.at(-1)?.role,
+			lastText: JSON.stringify(body.messages?.at(-1)?.content ?? "").slice(0, 600),
+			...(n === 0 ? { tools: (body.tools ?? []).map(t => t.function?.name) } : {}),
+		});
 		n++;
 		res.writeHead(200, { "content-type": "text/event-stream" });
 		if (step.tool) {

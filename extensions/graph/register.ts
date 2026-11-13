@@ -15,6 +15,7 @@ import {
 	type Plan,
 	type PlanStep,
 	planLines,
+	planText,
 	remaining,
 	reopenStep,
 	savePlan,
@@ -49,6 +50,10 @@ export function registerGraph(
 		ensureTask: (ctx: ExtensionContext, title: string) => Promise<TaskStore>;
 		/** Error text when the active step may not finish yet (e.g. verify not passed). */
 		gate?: () => string | undefined;
+		/** Called after every saved change to the plan. */
+		onChange?: () => void;
+		/** No step can go on (nothing active, some blocked). Returns extra text for the model. */
+		onStuck?: (plan: Plan) => string | undefined;
 	},
 ): GraphHooks {
 	const z = pi.zod;
@@ -64,6 +69,7 @@ export function registerGraph(
 	function save(ctx?: ExtensionContext): void {
 		const store = deps.getStore();
 		if (store && cache?.dir === store.dir) savePlan(store.dir, cache.plan);
+		deps.onChange?.();
 		if (ctx) showPlan(ctx);
 	}
 
@@ -83,7 +89,14 @@ export function registerGraph(
 	function describeNext(next: PlanStep | undefined, fromInbox: PlanStep[]): string {
 		const parts: string[] = [];
 		if (fromInbox.length) parts.push(`Added from the user's queued asks: ${fromInbox.map(s => `${s.id}. ${s.title}`).join("; ")}.`);
-		parts.push(next ? `Next active step: ${next.id}. ${next.title}` : "All steps are finished. Call report_summary.");
+		const p = plan();
+		const blocked = p?.steps.filter(s => s.status === "blocked").length ?? 0;
+		if (next) parts.push(`Next active step: ${next.id}. ${next.title}`);
+		else if (blocked && p) {
+			parts.push(`No step can go on: ${blocked} blocked. Call report_summary with what needs the user.`);
+			const extra = deps.onStuck?.(p);
+			if (extra) parts.push(extra);
+		} else parts.push("All steps are finished. Call report_summary.");
 		return parts.join(" ");
 	}
 
@@ -206,7 +219,7 @@ export function registerGraph(
 	});
 
 	pi.registerCommand("plan", {
-		description: "Show the step list. `/plan reopen <id> <what cleared it>` reopens a blocked step.",
+		description: "Show the whole step list. `/plan file` prints where plan.md is; `/plan reopen <id> <what cleared it>` reopens a blocked step.",
 		handler: async (args, ctx) => {
 			const m = (args ?? "").trim().match(/^reopen\s+(\d+)\s*(.*)$/s);
 			if (m) {
@@ -219,10 +232,15 @@ export function registerGraph(
 				return;
 			}
 			const p = plan();
-			const text = p?.steps.length ? planLines(p, 50).join("\n") : "No plan yet.";
+			if ((args ?? "").trim() === "file") {
+				const store = deps.getStore();
+				const msg = store ? `${store.dir}/plan.md (rewritten on every change; open it from any shell)` : "No task yet.";
+				return ctx.hasUI ? ctx.ui.notify(msg, "info") : console.log(msg);
+			}
+			const text = p ? planText(p) : "No plan yet.";
 			if (ctx.hasUI) {
 				showPlan(ctx);
-				await ctx.ui.editor("Step list (Esc to close)", text);
+				await ctx.ui.editor("Step list, all steps (Esc to close)", text);
 			} else {
 				console.log(text);
 			}
