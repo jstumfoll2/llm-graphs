@@ -1,6 +1,6 @@
 {
 	"name": "omp-llm-graphs",
-	"version": "0.5.1",
+	"version": "0.6.0",
 	"description": "OMP plugin: a step list kept by code, a verify loop and GitLab MR, a lead that hands work to workers, lessons that carry over, and plain task reports",
 	"type": "module",
 	"omp": {

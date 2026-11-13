@@ -19,13 +19,15 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { active } from "../graph/plan";
 import { registerCleanup } from "../cleanup/register";
+import { registerFirstmate } from "../firstmate/register";
+import { partOn } from "../parts";
 import { registerGraph } from "../graph/register";
 import { registerLead } from "../lead/register";
 import { registerMemory } from "../memory/register";
 import { loadConfig } from "../verify/config";
 import { registerVerify } from "../verify/register";
 import { renderBrief, renderReport } from "./render";
-import { ledgerPath, newTaskId, repoFile, pruneTasks, reportRoot, type StepEntry, TaskStore } from "./store";
+import { ledgerPath, newTaskId, pruneTasks, repoFile, reportFile, reportRoot, type StepEntry, TaskStore } from "./store";
 
 const ENTRY_TYPE = "llmg-task"; // session entry that remembers the current task id
 const LOGGED_TOOLS = new Set(["edit", "write", "bash", "ast_edit"]);
@@ -170,25 +172,56 @@ export default function reportExtension(pi: ExtensionAPI) {
 
 	const ensureTask = async (ctx: ExtensionContext, title: string) => store ?? startTask(ctx, title);
 	// verify and graph refer to each other through these closures
-	const verify = registerVerify(pi, {
+	// Parts that Firstmate already owns are off inside a Firstmate worker (see parts.ts).
+	const verify = partOn("verify")
+		? registerVerify(pi, {
+				getStore: () => store,
+				repo: () => ({ name: repo, top: repoTop }),
+				activeStep: () => {
+					const p = graph.plan();
+					return p ? active(p)?.id : undefined;
+				},
+				stepSince: () => {
+					const p = graph.plan();
+					return p ? active(p)?.reopenedAt : undefined;
+				},
+				stepsDone: () => graph.plan()?.steps.filter(s => s.status === "done").map(s => s.title) ?? [],
+				changedFiles: ctx => (store ? changedSinceStart(ctx, store) : Promise.resolve([])),
+				ensureTask,
+			})
+		: { gate: () => undefined, view: () => ({}), promptBlock: () => "" };
+	const graph = registerGraph(pi, {
 		getStore: () => store,
-		repo: () => ({ name: repo, top: repoTop }),
-		activeStep: () => {
-			const p = graph.plan();
-			return p ? active(p)?.id : undefined;
-		},
-		stepSince: () => {
-			const p = graph.plan();
-			return p ? active(p)?.reopenedAt : undefined;
-		},
-		stepsDone: () => graph.plan()?.steps.filter(s => s.status === "done").map(s => s.title) ?? [],
-		changedFiles: ctx => (store ? changedSinceStart(ctx, store) : Promise.resolve([])),
 		ensureTask,
+		gate: () => verify.gate(),
+		onChange: () => fm.changed(),
+		onStuck: p => fm.stuck(p),
 	});
-	const graph = registerGraph(pi, { getStore: () => store, ensureTask, gate: () => verify.gate() });
-	const lead = registerLead(pi, { repoDefault: () => (repo ? loadConfig(repo, repoTop).config?.lead === true : false) });
-	const memory = registerMemory(pi, { repo: () => repo, taskId: () => store?.info().id });
-	registerCleanup(pi, { reportRoot: root, currentTaskDir: () => store?.dir });
+	const lead = partOn("lead")
+		? registerLead(pi, { repoDefault: () => (repo ? loadConfig(repo, repoTop).config?.lead === true : false) })
+		: { on: () => false, promptBlock: () => undefined };
+	const memory = partOn("lessons")
+		? registerMemory(pi, { repo: () => repo, taskId: () => store?.info().id })
+		: { promptBlock: () => undefined, forTask: () => undefined };
+	if (partOn("cleanup")) registerCleanup(pi, { reportRoot: root, currentTaskDir: () => store?.dir });
+	const fm = registerFirstmate(pi, {
+		plan: () => graph.plan(),
+		planFile: () => (store ? path.join(store.dir, "plan.md") : undefined),
+		reportFile: () => (store ? reportTarget(store) : undefined),
+	});
+
+	function reportTarget(s: TaskStore): string {
+		const t = fm.task();
+		return reportFile({
+			task_dir: s.dir,
+			task: s.info().id,
+			repo,
+			date: new Date().toISOString().slice(0, 10),
+			fm_task: t?.id,
+			fm_home: t?.home,
+			fm_state: t?.stateDir,
+		});
+	}
 
 	async function changedSinceStart(ctx: ExtensionContext, s: TaskStore): Promise<string[]> {
 		const info = s.info();
@@ -208,7 +241,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		const diffStat = info.baseHead ? await git(ctx, ["diff", "--stat", info.baseHead]) : undefined;
 		const steps = s.steps();
 		const md = renderReport(info, steps, s.ledger(), s.summary(), { changedFiles, diffStat, ...verify.view(), lessons: memory.forTask(info.id) }, undefined, graph.plan());
-		return { file: s.writeReport(md), brief: renderBrief(info, steps, changedFiles.length) };
+		return { file: s.writeReport(md, reportTarget(s)), brief: renderBrief(info, steps, changedFiles.length) };
 	}
 
 	// ---------- hooks ----------
@@ -356,7 +389,8 @@ export default function reportExtension(pi: ExtensionAPI) {
 				mrLink: params.mr_link,
 			});
 			const { file } = await buildReport(ctx, store!);
-			return { content: [{ type: "text", text: `Summary saved. Report: ${file}` }] };
+			const told = fm.finished(params.overview, file, graph.plan());
+			return { content: [{ type: "text", text: `Summary saved. Report: ${file}${told ? ` ${told}` : ""}` }] };
 		},
 	});
 

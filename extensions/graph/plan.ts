@@ -63,6 +63,10 @@ export function savePlan(dir: string, plan: Plan): void {
 	const p = path.join(dir, "plan.json");
 	fs.writeFileSync(`${p}.tmp`, `${JSON.stringify(plan, null, 2)}\n`);
 	fs.renameSync(`${p}.tmp`, p); // atomic, so a crash never leaves half a plan
+	// A readable copy you can open from any shell while the agent works: less <task folder>/plan.md
+	const md = path.join(dir, "plan.md");
+	fs.writeFileSync(`${md}.tmp`, planText(plan));
+	fs.renameSync(`${md}.tmp`, md);
 }
 
 export const MAX_TITLE = 300;
@@ -263,4 +267,25 @@ export function planLines(plan: Plan, maxLines = 12): string[] {
 	const firstOpen = plan.steps.findIndex(s => s.status === "active" || s.status === "pending");
 	const start = Math.max(0, Math.min(firstOpen - 2, lines.length - maxLines));
 	return [`... ${start} earlier steps`, ...lines.slice(start, start + maxLines - 1)];
+}
+
+/**
+ * The whole list with nothing cut: every step, its evidence or block reason,
+ * and the asks still queued. Used by /plan and written to plan.md.
+ */
+export function planText(plan: Plan): string {
+	if (!plan.steps.length && !plan.inbox.length) return "No plan yet.\n";
+	const count = (st: StepStatus) => plan.steps.filter(s => s.status === st).length;
+	const out = [
+		`${count("done")} of ${plan.steps.length} steps done, ${count("blocked")} blocked, ${remaining(plan).length} to go.`,
+		"",
+		...planLines(plan, Number.POSITIVE_INFINITY).map((line, i) => {
+			const s = plan.steps[i]!;
+			const note = s.status === "done" ? s.evidence : s.status === "blocked" ? s.reason : undefined;
+			const pad = s.parent !== undefined ? "        " : "    ";
+			return note ? `${line}\n${pad}${s.status === "blocked" ? "blocked: " : ""}${note.replace(/\s+/g, " ").trim()}` : line;
+		}),
+	];
+	if (plan.inbox.length) out.push("", "Queued asks (join after the current step):", ...plan.inbox.map(a => `  - ${a}`));
+	return `${out.join("\n")}\n`;
 }

@@ -4,6 +4,8 @@ OMP plugins that make long agent runs easy to follow. The goal is a lead agent y
 
 It has six parts that install together: the **step list** keeps the agent on track, **verify and MR** move testing and GitLab into code, **lead mode** makes the agent hand work to workers, **lessons** carry what it learned to the next task, **cleanup** keeps disk use bounded, and the **report** tells you what it did.
 
+Running workers under [Firstmate](https://github.com/kunchenguid/firstmate)? The plugin notices and becomes the worker-side half: it reads Firstmate's steering inbox in code, writes its status lines, feeds its stall detection, and turns off the parts Firstmate already owns. See [Firstmate workers](#firstmate-workers) and [docs/firstmate.md](docs/firstmate.md) for what to change on the Firstmate side.
+
 ## Step list
 
 The task's steps live in a file, not in the model's memory. Code decides what is active and what comes next.
@@ -17,7 +19,8 @@ The task's steps live in a file, not in the model's memory. Code decides what is
 - **No going quiet.** If the agent stops with steps left, it gets a follow-up naming the open step. After 3 nudges with no progress it stops nudging and warns you. It doesn't nudge when its last message was a question for you.
 - **Advisor capped.** The first advisor note during a step reaches the agent. Later ones in the same step are held back and listed in the report, which ends the advisor back-and-forth loop.
 - **One list.** Calls to OMP's own `todo` tool are refused with a pointer to the step list. Subagents can't move the lead's plan.
-- **Always in view.** The plan shows above the prompt and in the system prompt at every turn. `/plan` opens the full list.
+- **Always in view.** The plan shows above the prompt (the last 8 lines) and in the system prompt at every turn. `/plan` opens the whole list with nothing cut: every step, its evidence or block reason, and your queued asks.
+- **Readable from any shell.** The same whole list is rewritten to `plan.md` in the task folder on every change, so you can `less` it over SSH while the agent works. `/plan file` prints its path.
 
 ## Verify and merge request
 
@@ -114,9 +117,10 @@ Restart OMP after installing.
 | Command | What it does |
 | --- | --- |
 | `/ask <text>` | Queue a new ask; it joins the plan after the current step |
-| `/plan` | Show the full step list |
+| `/plan` | Show the whole step list, with evidence, block reasons and queued asks |
+| `/plan file` | Print where `plan.md` (the same list, kept current) lives |
 | `/plan reopen <id> <note>` | Reopen a blocked step |
-| `/report` | Build `REPORT.md` and show a 3-line status above the prompt |
+| `/report` | Build the report (`REPORT.md` unless `OMP_GRAPHS_REPORT_FILE` says otherwise) and show a 3-line status above the prompt |
 | `/report view` | Open the report in a scrollable view |
 | `/report final` | Ask the agent to write the final summary |
 | `/report new <title>` | Start a new task (otherwise a task starts with your first prompt) |
@@ -148,6 +152,12 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | `OMP_GRAPHS_SESSION_KEEP_DAYS` | `3` | Files written within this many days are never removed |
 | `OMP_REPORT_CAP_GB` | `5` | Size cap for task folders |
 | `OMP_GRAPHS_SESSIONS_DIR` | from OMP | Sessions folder to clean, if not in OMP's usual layout |
+| `OMP_GRAPHS_REPORT_FILE` | `{task_dir}/REPORT.md` | Where the report is written. A path template: `{task_dir}`, `{task}`, `{repo}`, `{date}`, `{fm_task}`, `{fm_home}`, `{fm_state}`, `{env:NAME}`. Relative paths are under the task folder. If a placeholder has no value, the default is used |
+| `OMP_GRAPHS_DISABLE` | `lead,verify,lessons` under Firstmate, else empty | Parts to turn off: any of `lead`, `verify` (also `open_mr` and `watch_pipeline`), `lessons`, `cleanup`. Set it, even to empty, to override the default |
+| `OMP_GRAPHS_FIRSTMATE` | auto | `0` turns the Firstmate integration off even when Firstmate launched this omp |
+| `OMP_GRAPHS_FM_DONE` | unset | `1` writes a `done:` status line when `report_summary` closes a task with every step done |
+| `OMP_GRAPHS_INBOX_POLL_SEC` | `5` | How often an idle worker checks Firstmate's steering inbox |
+| `OMP_GRAPHS_FM_ROOT` | `FM_ROOT`, else the Firstmate home | Where to find `bin/fm-busy-event.sh` |
 
 ### Task folder
 
@@ -160,11 +170,25 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
   pipeline.json  latest pipeline result
   ledger.jsonl   one line per edit, write or command
   steps.jsonl    one line per report_step
+  plan.md        the whole step list in plain text, rewritten on every change
   summary.json   final summary
-  REPORT.md      built by /report
+  REPORT.md      built by /report (unless OMP_GRAPHS_REPORT_FILE points elsewhere)
 ```
 
 Files already modified before the task started are listed separately, since work happens in place in an existing checkout.
+
+## Firstmate workers
+
+When Firstmate launches omp for a task it sets `FM_TASK_ID` and `FM_TASK_INBOX`. With those present the plugin switches to worker mode:
+
+- **Steering inbox read by code.** Messages in `state/<id>.inbox/` reach the model at the next step boundary, or start a turn if it's idle, and are acknowledged by moving them to `handled/`. Firstmate's doorbell line is swallowed instead of costing a turn. Messages are checked after every tool call and every 5 seconds while idle.
+- **Status lines written by code.** When no step can go on (nothing active, something blocked), a `blocked [at=…]: no step can continue. step N (…): <reason>` line is appended to `state/<id>.status`, and the model is told to finish with `report_summary` and stop. With `OMP_GRAPHS_FM_DONE=1`, closing a task with every step done appends `done [at=…]: <first sentence of the summary> Report: <path>`.
+- **Stall evidence.** Each tool call (at most every 30 s) runs Firstmate's own `fm-busy-event.sh progress` with the task's current `busy-gen`, so a long busy step isn't treated as a wedged worker.
+- **Worker state file.** `state/<id>.llmg.json` holds the active step, done/blocked/total counts, queued asks, the last tool and when it ran, how many inbox messages were handled, and where `plan.md` and the report are.
+- **Parts Firstmate owns are off:** lead mode (the first mate leads), verify/`open_mr`/`watch_pipeline` (the project's delivery path validates and publishes), and lessons (`/stow` keeps memory). The step list, change ledger, report, nudges and cleanup stay. Override with `OMP_GRAPHS_DISABLE`.
+- **Report wherever you want it.** Set `OMP_GRAPHS_REPORT_FILE`, for example `{fm_home}/data/{fm_task}/llmg-report.md` to sit next to Firstmate's own task data without overwriting `report.md`.
+
+[docs/firstmate.md](docs/firstmate.md) lists what to change or remove on the Firstmate side.
 
 ## Layout
 
@@ -180,6 +204,9 @@ extensions/memory/lessons.ts lessons rules (pure functions)
 extensions/memory/register.ts lesson tools, /lessons
 extensions/cleanup/sizes.ts  disk use and cleanup plan (pure planning)
 extensions/cleanup/register.ts daily background cleanup, /cleanup
+extensions/firstmate/fm.ts   Firstmate's inbox, status, busy-event and state files (pure helpers)
+extensions/firstmate/register.ts worker mode: inbox delivery, status lines, progress, state file
+extensions/parts.ts          which parts are on (OMP_GRAPHS_DISABLE, Firstmate defaults)
 agents/*.md                  the three workers lead mode hands steps to
 extensions/report/store.ts   task folder reads and writes, cleanup
 extensions/report/render.ts  builds REPORT.md (pure function)
@@ -195,9 +222,10 @@ OMP=$(which omp) test/e2e/run.sh                  # end to end: report
 SCENARIO=graph OMP=$(which omp) test/e2e/run.sh   # end to end: step list
 SCENARIO=ship OMP=$(which omp) test/e2e/run.sh    # end to end: verify, MR, pipeline (fake glab)
 SCENARIO=lead OMP=$(which omp) test/e2e/run.sh    # end to end: lead hands a step to a real worker, lessons
+SCENARIO=firstmate OMP=$(which omp) test/e2e/run.sh  # end to end: worker under a fake Firstmate home
 ```
 
-Tested with OMP 18.18.8. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
+Tested with OMP 18.18.8 and 18.20.0. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
 
 ## Background
 
