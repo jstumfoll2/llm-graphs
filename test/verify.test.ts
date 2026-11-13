@@ -26,6 +26,10 @@ describe("verify rules", () => {
 		expect(needsVerify([edit], [])).toBe(true);
 		expect(needsVerify([edit], [run("2026-11-11T02:00:00Z", true)])).toBe(false);
 		expect(needsVerify([edit], [run("2026-11-11T02:00:00Z", false)])).toBe(true);
+		// Writes outside the checkout or to OMP's internal URIs don't need a verify.
+		for (const p of ["/data/scratch/notes.md", "../../scratch/x", "xd:/write"]) {
+			expect(needsVerify([{ ...edit, path: p }], [])).toBe(false);
+		}
 		expect(needsVerify([{ ...edit, ts: "2026-11-11T03:00:00Z" }], [run("2026-11-11T02:00:00Z", true)])).toBe(true);
 		expect(needsVerify([{ ...edit, tool: "bash" }], [])).toBe(false);
 	});
@@ -83,22 +87,56 @@ describe("glab output", () => {
 });
 
 describe("config", () => {
-	test("user config wins over repo config; bad JSON is reported", () => {
-		const cfgDir = path.join(tmp, "cfg");
-		const top = path.join(tmp, "repo");
-		fs.mkdirSync(cfgDir, { recursive: true });
-		fs.mkdirSync(top, { recursive: true });
-		process.env.OMP_GRAPHS_CONFIG_DIR = cfgDir;
-		expect(loadConfig("repo", top)).toEqual({});
-		fs.writeFileSync(path.join(top, ".llm-graphs.json"), JSON.stringify({ verify: [{ cmd: "make" }] }));
-		expect(loadConfig("repo", top).config?.verify[0]).toEqual({ name: "check 1", cmd: "make", timeout_min: undefined });
-		fs.writeFileSync(path.join(cfgDir, "repo.json"), JSON.stringify({ verify: [{ name: "b", cmd: "ninja" }], mr: { target_branch: "develop" } }));
-		const c = loadConfig("repo", top).config!;
-		expect(c.verify[0]!.cmd).toBe("ninja");
-		expect(c.mr?.target_branch).toBe("develop");
-		expect(c.max_attempts).toBe(3);
-		fs.writeFileSync(path.join(cfgDir, "repo.json"), "{oops");
-		expect(loadConfig("repo", top).error).toContain("Could not read");
-		delete process.env.OMP_GRAPHS_CONFIG_DIR;
+	const cfgDir = path.join(tmp, "cfg");
+	const top = path.join(tmp, "repo");
+	fs.mkdirSync(cfgDir, { recursive: true });
+	fs.mkdirSync(top, { recursive: true });
+	const withEnv = (env: Record<string, string | undefined>, fn: () => void) => {
+		const old = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
+		for (const [k, v] of Object.entries(env)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+		try {
+			fn();
+		} finally {
+			for (const [k, v] of Object.entries(old)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+		}
+	};
+
+	test("a config the agent can write in the checkout is ignored by default", () => {
+		withEnv({ OMP_GRAPHS_CONFIG_DIR: cfgDir, OMP_GRAPHS_TRUST_REPO_CONFIG: undefined }, () => {
+			expect(loadConfig("repo", top)).toEqual({ ignored: undefined });
+			const repoFile = path.join(top, ".llm-graphs.json");
+			fs.writeFileSync(repoFile, JSON.stringify({ verify: [{ cmd: "touch /tmp/pwned" }], mr: { target_branch: "main" } }));
+			const r = loadConfig("repo", top);
+			expect(r.config).toBeUndefined();
+			expect(r.ignored).toBe(repoFile);
+		});
+		withEnv({ OMP_GRAPHS_CONFIG_DIR: cfgDir, OMP_GRAPHS_TRUST_REPO_CONFIG: "1" }, () => {
+			expect(loadConfig("repo", top).config?.verify[0]).toEqual({ name: "check 1", cmd: "touch /tmp/pwned", timeout_min: undefined });
+		});
+		fs.rmSync(path.join(top, ".llm-graphs.json"));
+	});
+
+	test("a user config dir inside the checkout is refused, symlinks included", () => {
+		withEnv({ OMP_GRAPHS_CONFIG_DIR: path.join(top, ".omp-cfg") }, () => {
+			expect(loadConfig("repo", top).error).toContain("inside the checkout");
+		});
+		const link = path.join(tmp, "cfg-link");
+		fs.symlinkSync(top, link);
+		withEnv({ OMP_GRAPHS_CONFIG_DIR: link }, () => {
+			expect(loadConfig("repo", top).error).toContain("inside the checkout");
+		});
+	});
+
+	test("user config is read; bad JSON is reported", () => {
+		withEnv({ OMP_GRAPHS_CONFIG_DIR: cfgDir, OMP_GRAPHS_TRUST_REPO_CONFIG: "1" }, () => {
+			fs.writeFileSync(path.join(top, ".llm-graphs.json"), JSON.stringify({ verify: [{ cmd: "make" }] }));
+			fs.writeFileSync(path.join(cfgDir, "repo.json"), JSON.stringify({ verify: [{ name: "b", cmd: "ninja" }], mr: { target_branch: "develop" } }));
+			const c = loadConfig("repo", top).config!;
+			expect(c.verify[0]!.cmd).toBe("ninja"); // yours wins over the repo's
+			expect(c.mr?.target_branch).toBe("develop");
+			expect(c.max_attempts).toBe(3);
+			fs.writeFileSync(path.join(cfgDir, "repo.json"), "{oops");
+			expect(loadConfig("repo", top).error).toContain("Could not read");
+		});
 	});
 });

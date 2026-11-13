@@ -41,7 +41,7 @@ export function registerMemory(
 		description:
 			"Save one thing a later task in this repo would need to know: a build quirk, a test command, where something lives, a trap you fell into. One plain sentence. It starts as a tip and becomes a standing rule only after it helps in other tasks.",
 		parameters: z.object({
-			text: z.string().describe("The lesson, one sentence, e.g. 'The build needs module load gcc/12 before cmake.'"),
+			text: z.string().describe("The lesson, one sentence of at most 300 characters, e.g. 'The build needs module load gcc/12 before cmake.' Longer text is refused, not cut."),
 			why: z.string().optional().describe("What happened that taught it"),
 		}),
 		async execute(_id, params) {

@@ -60,6 +60,14 @@ describe("lessons", () => {
 		addLesson(db, "Unit tests run with ctest -R gain from build/.");
 		expect(addLesson(db, "unit tests run with  ctest -R gain from build/").duplicate).toBe(true);
 		expect(addLesson(db, "use gcc").error).toContain("full sentence");
+		// Too long is refused whole, never cut mid-command.
+		const long = `Run the job's script: ${"make -C build all && ".repeat(20)}!reference`;
+		const r = addLesson(db, long);
+		expect(r.error).toContain("limit is 300");
+		expect(db.lessons.some(l => l.text.startsWith("Run the job"))).toBe(false);
+		const why = addLesson(emptyDb(), "Lint runs with make lint from the top.", { why: "word ".repeat(100) }).lesson!.why!;
+		expect(why.length).toBeLessThanOrEqual(300);
+		expect(why.endsWith("word…")).toBe(true);
 		const mine = addLesson(db, "Never touch the frozen 6DOF reference tables.", { source: "user" });
 		expect(mine.lesson?.status).toBe("rule");
 		expect(forget(db, 1)?.id).toBe(1);
