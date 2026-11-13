@@ -137,6 +137,13 @@ elif [ "$SCENARIO" = firstmate ]; then
 else
 	grep -q 'Raised the pitch gain' "$TASK/steps.jsonl" || fail "step not recorded"
 	grep -q 'Confirm 1.25' "$REPORT" || fail "needs_you item missing"
+	grep -q 'Ask for the decision itself' "$WORK/mock.log" || fail "an indirect question was not refused"
+	grep -q 'Q1. Open a draft merge request to develop now?' "$REPORT" || fail "question missing from the report"
+	grep -q 'Recommended: Yes, open it, because the change is one line' "$REPORT" || fail "recommendation missing"
+	grep -q '· You' "$TASK/timeline.md" || fail "your direction is not in the timeline"
+	grep -q 'Raise the pitch gain to 1.25' "$TASK/timeline.md" || fail "direction text missing from the timeline"
+	grep -q '· Final report' "$TASK/timeline.md" || fail "final report not in the timeline"
+	[ "$(grep -c '· Final report' "$TASK/timeline.md")" = 1 ] || fail "more than one final report in the timeline"
 fi
 echo "--- REPORT.md"; cat "$REPORT"
 echo "PASS"

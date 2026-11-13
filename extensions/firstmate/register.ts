@@ -136,10 +136,6 @@ export function registerFirstmate(
 		if (ctx.agent?.kind !== "sub") void deliver(); // between tool calls is a step boundary; the timer covers idle time
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
-		if (ctx.agent?.kind !== "sub") publish();
-	});
-
 	return {
 		task: () => t,
 		changed: publish,

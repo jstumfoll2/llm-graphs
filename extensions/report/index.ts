@@ -20,6 +20,8 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { active } from "../graph/plan";
 import { registerCleanup } from "../cleanup/register";
 import { registerFirstmate } from "../firstmate/register";
+import { registerScreen, SCREEN_RULES } from "../screen/register";
+import { checkQuestions } from "../screen/view";
 import { partOn } from "../parts";
 import { registerGraph } from "../graph/register";
 import { registerLead } from "../lead/register";
@@ -204,6 +206,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		? registerMemory(pi, { repo: () => repo, taskId: () => store?.info().id })
 		: { promptBlock: () => undefined, forTask: () => undefined };
 	if (partOn("cleanup")) registerCleanup(pi, { reportRoot: root, currentTaskDir: () => store?.dir });
+	const screen = registerScreen(pi, { dir: () => store?.dir });
 	const fm = registerFirstmate(pi, {
 		plan: () => graph.plan(),
 		planFile: () => (store ? path.join(store.dir, "plan.md") : undefined),
@@ -253,7 +256,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!store && ctx.agent?.kind !== "sub") await startTask(ctx, event.prompt);
 		const parts = [RULES, graph.promptBlock(), verify.promptBlock(), memory.promptBlock()];
-		if (ctx.agent?.kind !== "sub") parts.push(lead.promptBlock());
+		if (ctx.agent?.kind !== "sub") parts.push(lead.promptBlock(), SCREEN_RULES);
 		return { systemPrompt: [...event.systemPrompt, ...parts.filter((x): x is string => !!x)] };
 	});
 
@@ -274,8 +277,11 @@ export default function reportExtension(pi: ExtensionAPI) {
 		actionsSinceStep++;
 	});
 
+	// The only agent_end handler: in print mode, a nudge must be sent before any other
+	// handler awaits, or omp may exit before the nudged turn finishes.
 	pi.on("agent_end", async (event, ctx) => {
-		if (!store || event.willContinue || ctx.agent?.kind === "sub") return;
+		if (ctx.agent?.kind === "sub") return;
+		if (!store || event.willContinue) return screen.agentEnd(event.willContinue === true, ctx);
 		const parts: string[] = [];
 		if (actionsSinceStep >= NUDGE_AFTER && !nudged) {
 			nudged = true; // one report nudge per gap, so it can never loop
@@ -283,11 +289,14 @@ export default function reportExtension(pi: ExtensionAPI) {
 		}
 		const stepNudge = graph.nudge(lastAssistantText(event.messages), ctx);
 		if (stepNudge) parts.push(stepNudge);
-		if (!parts.length) return;
-		pi.sendMessage(
-			{ customType: "llmg-nudge", content: parts.join("\n"), display: true },
-			{ triggerTurn: true, deliverAs: "followUp" },
-		);
+		if (parts.length) {
+			pi.sendMessage(
+				{ customType: "llmg-nudge", content: parts.join("\n"), display: true },
+				{ triggerTurn: true, deliverAs: "followUp" },
+			);
+		}
+		fm.changed();
+		screen.agentEnd(parts.length > 0, ctx); // nudged: it isn't done, so the report waits
 	});
 
 	// ---------- tools ----------
@@ -365,10 +374,20 @@ export default function reportExtension(pi: ExtensionAPI) {
 		loadMode: "essential",
 		approval: "read",
 		description:
-			"Write the final summary for the task report when the task is done or blocked. Plain words: what changed, how it was tested, and what the user must decide.",
+			"The one final report, when the task is done or blocked. It is pinned above the user's prompt. Call it again after any later fix: the new one replaces the old. Plain words: the outcome, what changed, how it was tested, and the questions only the user can answer.",
 		parameters: z.object({
-			overview: z.string().describe("3 to 8 plain sentences: the outcome, what changed, how it was tested"),
-			needs_you: z.array(z.string()).optional().describe("Decisions or approvals only the user can give"),
+			overview: z.string().describe("3 to 8 plain sentences: the outcome first, then what changed and how it was tested. No corrections history"),
+			questions: z
+				.array(
+					z.object({
+						ask: z.string().describe("One direct question ending in '?', asking for the decision itself, e.g. 'Merge MR !42 now?'"),
+						options: z.array(z.string()).optional().describe("The choices, if it is a choice"),
+						recommend: z.string().optional().describe("Your recommended option, copied exactly from options"),
+						why: z.string().optional().describe("One sentence: why you recommend it, or what depends on the answer"),
+					}),
+				)
+				.optional()
+				.describe("Everything you need from the user, one decision per question. Leave out if nothing is needed"),
 			mr_link: z.string().optional().describe("Merge request URL, if one was opened"),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -382,27 +401,36 @@ export default function reportExtension(pi: ExtensionAPI) {
 					],
 				};
 			}
+			const questions = params.questions ?? [];
+			const bad = checkQuestions(questions);
+			if (bad) return { isError: true, content: [{ type: "text", text: bad }] };
 			store!.setSummary({
 				ts: new Date().toISOString(),
 				overview: params.overview.trim(),
-				needsYou: params.needs_you ?? [],
+				needsYou: [],
+				questions,
 				mrLink: params.mr_link,
 			});
 			const { file } = await buildReport(ctx, store!);
 			const told = fm.finished(params.overview, file, graph.plan());
-			return { content: [{ type: "text", text: `Summary saved. Report: ${file}${told ? ` ${told}` : ""}` }] };
+			const shown = screen.draft({ title: store!.info().title, overview: params.overview, questions, reportFile: file, dir: store!.dir });
+			return { content: [{ type: "text", text: `Final report saved: ${file}. ${shown}${told ? ` ${told}` : ""}` }] };
 		},
 	});
 
 	// ---------- command ----------
 
 	pi.registerCommand("report", {
-		description: "Task report: /report | /report view | /report final | /report new <title> | /report path",
+		description: "Task report: /report | /report view | /report final | /report new <title> | /report path | /report hide",
 		handler: async (args, ctx) => {
 			const [sub = "", ...rest] = (args ?? "").trim().split(/\s+/);
 			const notify = (msg: string, type: "info" | "warning" = "info") =>
 				ctx.hasUI ? ctx.ui.notify(msg, type) : console.log(msg);
 
+			if (sub === "hide") {
+				screen.hide(ctx);
+				return;
+			}
 			if (sub === "new") {
 				const s = await startTask(ctx, rest.join(" ") || "Untitled task");
 				notify(`Started task: ${s.info().title}`);
