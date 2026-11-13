@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { latestTests, renderReport } from "../extensions/report/render";
-import { newTaskId, pruneTasks, type StepEntry, slug, TaskStore } from "../extensions/report/store";
+import { ledgerPath, newTaskId, pruneTasks, repoFile, type StepEntry, slug, TaskStore } from "../extensions/report/store";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "llmg-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -113,6 +113,48 @@ describe("render", () => {
 		expect(md).toContain("Already modified before this task started");
 		expect(md).toContain("1 file edits, 1 commands (1 failed)");
 		expect(md).toContain("2 h 0 min");
+	});
+
+	test("pipes in table cells are escaped, so rows keep their columns", () => {
+		const step: StepEntry = {
+			n: 1,
+			ts: "2026-11-11T01:00:00.000Z",
+			title: "Run tests",
+			done: "Ran the filtered tests.",
+			decisions: [],
+			tests: [{ command: "ctest | tee log.txt", result: "fail", note: "2 of 3 | see log" }],
+			openQuestions: [],
+			needsYou: [],
+			files: [],
+		};
+		const md = renderReport(info, [step], [], undefined, { changedFiles: [] });
+		const row = md.split("\n").find(l => l.includes("tee log.txt"))!;
+		expect(row).toBe("| `ctest \\| tee log.txt` | fail | 2 of 3 \\| see log |");
+		expect(row.replace(/\\\|/g, "").split("|").length - 2).toBe(3); // three columns
+	});
+
+	test("internal URIs and files outside the repo are not listed as the change", () => {
+		const top = "/work/repo";
+		expect(ledgerPath("xd:/write", top, top)).toBeUndefined();
+		expect(ledgerPath("proc:/SweepKeyClaimCheck/kill", top, top)).toBeUndefined();
+		expect(ledgerPath("agent:/HwilModelCiPins", top, top)).toBeUndefined();
+		expect(ledgerPath("src/a.cpp", top, top)).toBe("src/a.cpp");
+		expect(ledgerPath("/work/repo/src/a.cpp", "/elsewhere", top)).toBe("src/a.cpp");
+		expect(ledgerPath("/data/prsm-scratch/x.log", top, top)).toBe("/data/prsm-scratch/x.log");
+		expect(ledgerPath("../other/x", top, top)).toBe("/work/other/x");
+		expect(repoFile("src/a.cpp")).toBe(true);
+		for (const p of ["xd:/write", "/data/x", "../../../../data/x", undefined]) expect(repoFile(p)).toBe(false);
+		const md = renderReport(
+			info,
+			[],
+			[
+				{ ts: "t", tool: "write", path: "/data/prsm-scratch/x.log", error: false },
+				{ ts: "t", tool: "edit", path: "src/a.cpp", error: false },
+			],
+			undefined,
+			{ changedFiles: ["src/a.cpp"] },
+		);
+		expect(md).toContain("Also written outside the repo (not part of the change): `/data/prsm-scratch/x.log`");
 	});
 
 	test("empty task renders without errors", () => {

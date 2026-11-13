@@ -25,7 +25,7 @@ import { registerMemory } from "../memory/register";
 import { loadConfig } from "../verify/config";
 import { registerVerify } from "../verify/register";
 import { renderBrief, renderReport } from "./render";
-import { newTaskId, pruneTasks, reportRoot, type StepEntry, TaskStore } from "./store";
+import { ledgerPath, newTaskId, repoFile, pruneTasks, reportRoot, type StepEntry, TaskStore } from "./store";
 
 const ENTRY_TYPE = "llmg-task"; // session entry that remembers the current task id
 const LOGGED_TOOLS = new Set(["edit", "write", "bash", "ast_edit"]);
@@ -99,11 +99,6 @@ export default function reportExtension(pi: ExtensionAPI) {
 			set.add(p.includes(" -> ") ? p.split(" -> ")[1]! : p);
 		}
 		return set;
-	}
-
-	function relPath(p: string, ctx: ExtensionContext): string {
-		const abs = path.isAbsolute(p) ? p : path.join(ctx.cwd, p);
-		return path.relative(repoTop || ctx.cwd, abs) || p;
 	}
 
 	async function detectRepo(ctx: ExtensionContext): Promise<void> {
@@ -203,7 +198,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 		}
 		for (const f of await statusPaths(ctx)) files.add(f);
 		for (const f of info.dirtyAtStart) files.delete(f);
-		for (const e of s.ledger()) if (e.path) files.add(e.path); // edits to already-dirty files still count
+		for (const e of s.ledger()) if (repoFile(e.path)) files.add(e.path); // edits to already-dirty files still count
 		return [...files].sort();
 	}
 
@@ -233,7 +228,8 @@ export default function reportExtension(pi: ExtensionAPI) {
 		if (!store || OWN_TOOLS.has(event.toolName) || !LOGGED_TOOLS.has(event.toolName)) return;
 		const input = event.input as { path?: string; file_path?: string; command?: string };
 		const rawPath = input.path ?? input.file_path;
-		const p = rawPath ? relPath(rawPath, ctx) : undefined;
+		const p = rawPath ? ledgerPath(rawPath, ctx.cwd, repoTop) : undefined;
+		if (rawPath && !p) return; // an OMP internal URI, not a file: nothing changed on disk
 		store.addLedger({
 			ts: new Date().toISOString(),
 			tool: event.toolName,

@@ -23,6 +23,36 @@ export interface TaskInfo {
 	dirtyAtStart: string[]; // files already modified before the task started
 }
 
+/**
+ * How a tool's path argument is stored in the ledger:
+ *   - undefined for OMP's internal URIs (xd:/write, proc:/<id>/kill, agent:/<id>),
+ *     which are not files, so they never show up as changed files;
+ *   - repo-relative for files in the checkout;
+ *   - absolute for files outside it, so they read as what they are instead of ../../../x.
+ */
+export function ledgerPath(raw: string, cwd: string, repoTop: string): string | undefined {
+	if (isUri(raw)) return undefined;
+	const abs = path.resolve(cwd, raw);
+	const rel = path.relative(repoTop || cwd, abs);
+	if (rel === "") return ".";
+	return rel.startsWith("..") || path.isAbsolute(rel) ? abs : rel;
+}
+
+/** An OMP internal URI such as xd:/write. A scheme of 2+ chars, so C:\ still counts as a path. */
+export function isUri(p: string): boolean {
+	return /^[a-z][a-z0-9+.-]+:/i.test(p);
+}
+
+/** Outside the checkout. Also catches ../ paths that older versions wrote to the ledger. */
+export function outsideRepo(p: string): boolean {
+	return path.isAbsolute(p) || p === ".." || p.startsWith("../") || p.startsWith("..\\");
+}
+
+/** A ledger path that is a file in the checkout, so it belongs in "What changed". */
+export function repoFile(p: string | undefined): p is string {
+	return !!p && !isUri(p) && !outsideRepo(p);
+}
+
 export interface LedgerEntry {
 	ts: string;
 	tool: string;

@@ -32,7 +32,7 @@ Your build and tests are run by the plugin, not typed by the model, and the mode
 
 ### Repo config
 
-`~/.omp/llm-graphs/repos/<repo>.json` (or a `.llm-graphs.json` in the repo top if you want to share it):
+`~/.omp/llm-graphs/repos/<repo>.json`, outside the checkout:
 
 ```json
 {
@@ -49,6 +49,13 @@ Your build and tests are run by the plugin, not typed by the model, and the mode
 
 Leave out `mr` and the agent stops at "verified, ready for you". With no config, nothing is gated.
 
+The config names commands that `verify` runs and turns on `open_mr`, which pushes and opens an MR, so the agent must not be able to write it:
+
+- A `.llm-graphs.json` in the repo top is **ignored** unless you start omp with `OMP_GRAPHS_TRUST_REPO_CONFIG=1`. Anything in the checkout can be written by the agent or a worker. Only set this for a repo where that file is reviewed and the agent can't change it.
+- A config path that resolves inside the checkout (for example `OMP_GRAPHS_CONFIG_DIR` pointing into it, or a symlink) is refused.
+- The config is read once when the session's first prompt is built and kept for the session, so a file written later in the session has no effect. `/verify setup` reloads it.
+- Not covered: an agent with shell access can still write `~/.omp/llm-graphs/repos/` for a *later* session. If your workers have unrestricted shell, make that folder read-only to them.
+
 ## Lead mode
 
 The agent you talk to plans, hands each step to a worker, checks the worker's evidence, and reports. It doesn't edit files or run commands itself, so it stays on the plan instead of disappearing into one step for an hour.
@@ -61,7 +68,7 @@ The agent you talk to plans, hands each step to a worker, checks the worker's ev
 
 What the agent learns in one task ("the build needs `module load gcc/12`") carries to the next task in the same repo, but only becomes a rule once it has proven useful.
 
-- **`lesson_add` tool.** Saves one sentence as a tip. Duplicates are caught.
+- **`lesson_add` tool.** Saves one sentence (up to 300 characters) as a tip. Longer text is refused with a request to shorten it, never cut. Duplicates are caught.
 - **`lesson_helped` tool.** When a tip saves time in a task, the agent says so. After a tip has helped in 2 tasks other than the one that wrote it (`OMP_GRAPHS_PROMOTE_AFTER`), it becomes a standing rule.
 - **In the prompt.** Standing rules, then up to 10 unproven tips marked as such. The list is fixed when a task starts, so nothing learned mid-task changes the agent's instructions until the next task.
 - **Yours to edit.** `/lessons` lists them. `/lessons add <rule>` adds a rule straight away, and `/lessons promote <id>` and `/lessons forget <id>` do what they say.
@@ -132,7 +139,8 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | `OMP_GRAPH_MAX_NUDGES` | `3` | Nudges with no progress before it warns you instead |
 | `OMP_GRAPH_ADVISOR_PER_STEP` | `1` | Advisor notes the agent sees per step |
 | `OMP_GRAPH_KEEP_TODO` | unset | Set to `1` to allow OMP's own todo tool alongside the step list |
-| `OMP_GRAPHS_CONFIG_DIR` | `~/.omp/llm-graphs/repos` | Where per-repo verify and MR configs live |
+| `OMP_GRAPHS_CONFIG_DIR` | `~/.omp/llm-graphs/repos` | Where per-repo verify and MR configs live (must be outside the checkout) |
+| `OMP_GRAPHS_TRUST_REPO_CONFIG` | unset | `1` also reads `.llm-graphs.json` from the repo top. Off because the agent can write that file |
 | `OMP_GRAPH_LEAD` | unset | `1` turns lead mode on, `0` forces it off |
 | `OMP_GRAPHS_MEMORY_DIR` | `~/.omp/llm-graphs/memory` | Where lessons live |
 | `OMP_GRAPHS_PROMOTE_AFTER` | `2` | Other tasks a tip must help in before it becomes a rule |

@@ -5,7 +5,7 @@
  */
 import type { Plan } from "../graph/plan";
 import type { PipelineRecord, VerifyRun } from "../verify/state";
-import type { LedgerEntry, StepEntry, Summary, TaskInfo, TestRun } from "./store";
+import { type LedgerEntry, outsideRepo, type StepEntry, type Summary, type TaskInfo, type TestRun } from "./store";
 
 export interface GitView {
 	diffStat?: string; // `git diff --stat <baseHead>` output
@@ -24,6 +24,19 @@ function duration(fromIso: string, toIso: string): string {
 	const mins = Math.max(0, Math.round((Date.parse(toIso) - Date.parse(fromIso)) / 60000));
 	if (mins < 60) return `${mins} min`;
 	return `${Math.floor(mins / 60)} h ${mins % 60} min`;
+}
+
+/** One markdown table cell: escape pipes so they can't open extra columns, and keep it on one line. */
+export function cell(s: string): string {
+	return s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+}
+
+/** Inline code that survives backticks in the text and sits safely in a table cell. */
+function code(s: string): string {
+	const t = cell(s);
+	const ticks = "`".repeat(Math.max(0, ...[...t.matchAll(/`+/g)].map(m => m[0].length)) + 1);
+	const pad = t.startsWith("`") || t.endsWith("`") ? " " : "";
+	return `${ticks}${pad}${t}${pad}${ticks}`;
 }
 
 function bullets(items: string[]): string {
@@ -105,8 +118,8 @@ export function renderReport(
 		for (const p of plan.steps) {
 			const reopens = (p.history ?? []).filter(h => h.event === "reopened");
 			const past = reopens.length ? ` (blocked before, reopened ${reopens.length}x: ${reopens.map(h => h.text).join("; ")})` : "";
-			const note = `${p.evidence ?? p.reason ?? ""}${past}`.replace(/\|/g, "/").replace(/\s+/g, " ").trim();
-			const title = `${p.parent !== undefined ? `↳ (part of ${p.parent}) ` : ""}${p.title}${p.source === "inbox" ? " (your ask)" : ""}`.replace(/\|/g, "/");
+			const note = cell(`${p.evidence ?? p.reason ?? ""}${past}`);
+			const title = cell(`${p.parent !== undefined ? `↳ (part of ${p.parent}) ` : ""}${p.title}${p.source === "inbox" ? " (your ask)" : ""}`);
 			out.push(`| ${p.id} | ${title} | ${p.status} | ${note} |`);
 		}
 		const held = plan.advisor.filter(a => !a.allowed);
@@ -125,6 +138,10 @@ export function renderReport(
 	} else {
 		out.push("No file changes since the task started.");
 	}
+	const outside = dedupe(ledger.filter(e => e.path && outsideRepo(e.path) && !e.error).map(e => e.path!));
+	if (outside.length) {
+		out.push("", `Also written outside the repo (not part of the change): ${outside.map(f => `\`${f}\``).join(", ")}`);
+	}
 	if (info.dirtyAtStart.length) {
 		out.push("", `Already modified before this task started (not counted above): ${info.dirtyAtStart.map(f => `\`${f}\``).join(", ")}`);
 	}
@@ -136,7 +153,7 @@ export function renderReport(
 	if (tests.length) {
 		out.push("| Command | Latest result | Note |");
 		out.push("| --- | --- | --- |");
-		for (const t of tests) out.push(`| \`${t.command}\` | ${t.result.replace("_", " ")} | ${t.note ?? ""} |`);
+		for (const t of tests) out.push(`| ${code(t.command)} | ${cell(t.result.replace("_", " "))} | ${cell(t.note ?? "")} |`);
 	} else {
 		out.push("No test runs reported.");
 	}

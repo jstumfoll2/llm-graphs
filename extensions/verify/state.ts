@@ -9,7 +9,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { LedgerEntry } from "../report/store";
+import { type LedgerEntry, repoFile } from "../report/store";
 
 export interface CheckResult {
 	name: string;
@@ -118,7 +118,8 @@ export function failuresForStep(runs: VerifyRun[], step: number | undefined, sin
  */
 export function needsVerify(ledger: LedgerEntry[], runs: VerifyRun[]): boolean {
 	const lastPass = [...runs].reverse().find(r => r.ok)?.ts ?? "";
-	return ledger.some(e => (e.tool === "edit" || e.tool === "write" || e.tool === "ast_edit") && !e.error && e.ts > lastPass);
+	// Edits outside the checkout (scratch files, notes) don't change what verify checks.
+	return ledger.some(e => (e.tool === "edit" || e.tool === "write" || e.tool === "ast_edit") && !e.error && e.ts > lastPass && (!e.path || repoFile(e.path)));
 }
 
 /** Keep only the last `maxBytes` of a log so a noisy build can't fill the disk. */

@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TaskStore } from "../report/store";
-import { CONFIG_TEMPLATE, configPaths, loadConfig, type RepoConfig } from "./config";
+import { CONFIG_TEMPLATE, configPaths, type LoadResult, loadConfig, type RepoConfig } from "./config";
 import {
 	type CheckResult,
 	capLog,
@@ -60,9 +60,23 @@ function shq(s: string): string {
 export function registerVerify(pi: ExtensionAPI, deps: VerifyDeps): VerifyHooks {
 	const z = pi.zod;
 
-	function config(): { config?: RepoConfig; error?: string } {
+	// Read once per checkout and kept for the session: the first read happens
+	// when the first prompt is built, so a config file the agent writes later in
+	// the session can't add verify commands or turn on open_mr. /verify setup
+	// clears it so your own edits apply right away.
+	let pinned: { key: string; result: LoadResult } | undefined;
+	function config(): LoadResult {
 		const { name, top } = deps.repo();
-		return name ? loadConfig(name, top) : {};
+		if (!name) return {};
+		const key = `${name}\0${top}`;
+		if (pinned?.key !== key) pinned = { key, result: loadConfig(name, top) };
+		return pinned.result;
+	}
+
+	function notConfigured(): string {
+		const { ignored } = config();
+		const skipped = ignored ? ` Ignored ${ignored}: a config inside the checkout is used only when the user starts omp with OMP_GRAPHS_TRUST_REPO_CONFIG=1.` : "";
+		return `Looked in: ${configPaths(deps.repo().name, deps.repo().top).join(", ")}.${skipped}`;
 	}
 
 	function state(): VerifyState | undefined {
@@ -93,7 +107,7 @@ export function registerVerify(pi: ExtensionAPI, deps: VerifyDeps): VerifyHooks 
 		if (error) return { message: error, isError: true };
 		if (!cfg?.verify.length) {
 			return {
-				message: `No verify checks configured for this repo. Ask the user to run /verify setup. Looked in: ${configPaths(deps.repo().name, deps.repo().top).join(", ")}`,
+				message: `No verify checks configured for this repo. Ask the user to run /verify setup. ${notConfigured()}`,
 				isError: true,
 			};
 		}
@@ -319,6 +333,7 @@ export function registerVerify(pi: ExtensionAPI, deps: VerifyDeps): VerifyHooks 
 				}
 				fs.mkdirSync(path.dirname(file), { recursive: true });
 				fs.writeFileSync(file, edited.endsWith("\n") ? edited : `${edited}\n`);
+				pinned = undefined;
 				return notify(`Saved ${file}`);
 			}
 			await deps.ensureTask(ctx, "Verify");
