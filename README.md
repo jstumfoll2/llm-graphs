@@ -4,7 +4,7 @@ OMP plugins that make long agent runs easy to follow. The goal is a lead agent y
 
 It has six parts that install together: the **step list** keeps the agent on track, **verify and MR** move testing and GitLab into code, **lead mode** makes the agent hand work to workers, **lessons** carry what it learned to the next task, **cleanup** keeps disk use bounded, and the **report** tells you what it did.
 
-Running workers under [Firstmate](https://github.com/kunchenguid/firstmate)? The plugin notices and becomes the worker-side half: it reads Firstmate's steering inbox in code, writes its status lines, feeds its stall detection, and turns off the parts Firstmate already owns. See [Firstmate workers](#firstmate-workers) and [docs/firstmate.md](docs/firstmate.md) for what to change on the Firstmate side.
+Running workers under [Firstmate](https://github.com/kunchenguid/firstmate)? The plugin notices and becomes the worker-side half: it reads Firstmate's steering inbox in code, writes its status lines, feeds its stall detection, and turns off the parts Firstmate already owns. See [Firstmate workers](#firstmate-workers) and [docs/firstmate.md](docs/firstmate.md) for what to change on the Firstmate side, and [firstmate/](firstmate/README.md) for ready-made Firstmate patches. [docs/omp-settings.md](docs/omp-settings.md) covers the OMP settings worth changing, including the advisor.
 
 ## Step list
 
