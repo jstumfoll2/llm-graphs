@@ -127,6 +127,8 @@ Restart OMP after installing.
 | `/report path` | Print the task folder |
 | `/report hide` | Clear the pinned final report |
 | `/jump` | Go back to one of your directions or an earlier report, newest first |
+| `/answer` | Answer the final report's questions in omp's question dialog |
+| `/fm-notices` | Show the recent Firstmate notices that were kept off the transcript |
 | `/verify` | Run the repo's checks now |
 | `/verify setup` | Create or edit this repo's verify and MR config |
 | `/lead on` / `/lead off` | Turn lead mode on or off for this session |
@@ -160,6 +162,9 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | `OMP_GRAPHS_FIRSTMATE` | auto | `0` turns the Firstmate integration off even when Firstmate launched this omp |
 | `OMP_GRAPHS_FM_DONE` | unset | `1` writes a `done:` status line when `report_summary` closes a task with every step done |
 | `OMP_GRAPHS_FOLD_LINES` | `30` | Finished replies longer than this are folded on screen (needs `extensionRenderers.assistantText`); `0` turns it off |
+| `OMP_GRAPHS_QUIET` | `1` | `0` draws the nudges, the plugin's tool calls, advisor notes and the agent's behind-the-scenes text again |
+| `OMP_GRAPHS_ASK` | `auto`, or `command` under Firstmate | When the question dialog opens: `auto` when the agent finishes, `command` only with `/answer`, `off` never |
+| `OMP_GRAPHS_FM_NOTICES` | hide | `show` leaves Firstmate's typed notices in the transcript as user messages |
 | `OMP_GRAPHS_INBOX_POLL_SEC` | `5` | How often an idle worker checks Firstmate's steering inbox |
 | `OMP_GRAPHS_FM_ROOT` | `FM_ROOT`, else the Firstmate home | Where to find `bin/fm-busy-event.sh` |
 
@@ -184,23 +189,25 @@ Files already modified before the task started are listed separately, since work
 
 ## The omp window
 
-One final report, held on screen, with the questions for you spelled out.
+What you see is the work and one final report. The plugin's bookkeeping stays off screen.
 
-- **One report, not three.** `report_summary` saves a draft. The card appears only when the agent has really finished: if an advisor note or a nudge sends it back to work first, the fix goes into the same report. A later `report_summary` replaces the card; the agent is told not to post corrections or summaries in chat.
-- **Pinned above the prompt.** The card shows the outcome, `NEEDS YOU` with each question, and the full paths of `REPORT.md` and `timeline.md`, each alone on a line so ctrl+click in a VS Code terminal opens it (a path wider than the terminal wraps and can't be clicked whole). It stays until the next report or `/report hide`. One short `■ Final report …` line also goes in the transcript, so scrolling back finds it.
-- **Explicit questions.** `report_summary` takes `questions`: one decision each, ending in `?`, with options and a recommendation. Indirect asks ("Let me know if you'd like…"), two questions in one, or a recommendation that isn't one of the options are refused with the reason, so the agent rewrites them. They are shown as `Q1. … Options: (a) … (b) … Recommended: …` and you can answer `Q1 a`.
-- **Jump back.** `/jump` lists your directions and every report, newest first; pick one to read it in full. `timeline.md` in the task folder holds the same, in order, for VS Code. Firstmate's own notices are not listed as your directions.
-- **Less noise (optional).** With omp's `extensionRenderers` settings on, finished replies longer than 30 lines (`OMP_GRAPHS_FOLD_LINES`, `0` to turn off) are drawn as their first 4 lines plus a pointer to `/jump`, and advisor cards are drawn as one row you can expand. Display only: the model and the session keep everything. In `~/.omp/agent/config.yml`:
+- **One report.** `report_summary` saves a draft. The card appears only when the agent has really finished. If an advisor note sends it back to work afterwards, the fixed report replaces the card in place: no "v2", no second transcript line, no banner.
+- **Pinned above the prompt.** The card shows the outcome, `NEEDS YOU` with each question, and the full paths of `REPORT.md` and `timeline.md`, each alone on a line so ctrl+click in a VS Code terminal opens it. It stays until the next report or `/report hide`. One short `■ Final report …` line goes in the transcript once per message from you, so scrolling back finds it.
+- **Questions in omp's own question dialog.** `report_summary` takes `questions`: one decision each, ending in `?`, with options and a recommendation; indirect or double questions are refused with the reason. When the agent finishes, they open in omp's question dialog (the one the `ask` tool uses): one tab per question, the recommendation preselected, "Other" to type your own, a review tab, then Submit. Your answers go back to the agent as one message. Esc keeps them on the card; `/answer` opens the dialog again. Inside Firstmate (`FM_HOME` or `FM_TASK_ID` set) the dialog opens only with `/answer`, because Firstmate types into the pane and an open dialog would take those keystrokes as answers; `OMP_GRAPHS_ASK=auto` opens it anyway, `off` never.
+- **Behind the scenes stays behind the scenes.** The plugin's nudges ("call report_step", "step 2 is still open") reach the model but are not drawn. Its own tool calls (`report_step`, `report_summary`, `plan_steps`, `step_done` and the rest) and advisor notes are not drawn. What the agent writes after a nudge, an advisor note or its final report is not drawn either, until you write again. Nothing is lost: the model, the session, `/jump` and the report keep all of it. After a final report, no further nudges are sent. `OMP_GRAPHS_QUIET=0` shows everything again.
+- **Firstmate's typed notices.** In the first mate's window, the one-line notices Firstmate types into the pane (`FIRSTMATE_OP …`, `[fm-from-firstmate] …`) go to the model unchanged as hidden messages, and the footer shows only the latest (`Firstmate: away-supervisor 10:03`). `/fm-notices` lists the recent ones in full. `OMP_GRAPHS_FM_NOTICES=show` turns this off. The watcher's wakes come from an extension, not the keyboard, so for those apply [`firstmate/omp-wake-widget.patch`](firstmate/README.md).
+- **Jump back.** `/jump` lists your directions and every report, newest first; pick one to read it in full. `timeline.md` in the task folder holds the same, in order.
+- **Long replies fold.** Finished replies longer than 30 lines (`OMP_GRAPHS_FOLD_LINES`, `0` to turn off) are drawn as their first 4 lines plus a pointer to `/jump`.
+
+Hiding and folding need two omp settings, off by default. In `~/.omp/agent/config.yml`:
 
 ```yaml
 extensionRenderers:
-  assistantText: true        # fold long replies
-  transcriptPresenters: true # advisor cards as one row
-display:
-  advisorCollapsedLines: 1   # omp's own setting: shorter advisor cards everywhere
+  assistantText: true        # hide the agent's behind-the-scenes text, fold long replies
+  transcriptPresenters: true # hide the plugin's own tool calls and advisor notes
 ```
 
-The one-line notices Firstmate's watcher adds to the first mate's session are user messages, which no omp extension can fold. To turn them into one line that updates in place, apply [`firstmate/omp-wake-widget.patch`](firstmate/README.md) to your Firstmate checkout.
+Two omp settings affect the window too: `startup.quiet: true` hides omp's splash screen (leave it off), and `hideThinkingBlock: true` makes a "Thinking" line appear and vanish on every model call, which shakes the screen until it fills (leave it off, or press Ctrl+T). See [docs/omp-settings.md](docs/omp-settings.md#less-noise-on-screen).
 
 ## Firstmate workers
 
@@ -232,10 +239,11 @@ extensions/cleanup/sizes.ts  disk use and cleanup plan (pure planning)
 extensions/cleanup/register.ts daily background cleanup, /cleanup
 extensions/firstmate/fm.ts   Firstmate's inbox, status, busy-event and state files (pure helpers)
 extensions/firstmate/register.ts worker mode: inbox delivery, status lines, progress, state file
+extensions/firstmate/notices.ts the first mate's window: typed Firstmate notices hidden, latest in the footer
 extensions/parts.ts          which parts are on (OMP_GRAPHS_DISABLE, Firstmate defaults)
 firstmate/                   patches and merge scripts for Firstmate itself, with their own README
 extensions/screen/view.ts    final report card, question rules, folding, timeline (pure)
-extensions/screen/register.ts pinned card, /jump, folding and advisor rows
+extensions/screen/register.ts pinned card, question dialog, /answer, /jump, hiding and folding
 agents/*.md                  the three workers lead mode hands steps to
 extensions/report/store.ts   task folder reads and writes, cleanup
 extensions/report/render.ts  builds REPORT.md (pure function)

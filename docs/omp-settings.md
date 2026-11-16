@@ -132,13 +132,14 @@ Several settings send data to omp.sh or check for updates. On a work network you
 
 | Setting | Default | Recommended | What it does |
 | --- | --- | --- | --- |
-| `startup.quiet` | `false` | `true` | Skips the welcome screen and startup notices |
+| `startup.quiet` | `false` | `false` | `true` skips omp's splash screen along with the startup notices. Earlier versions of this page recommended `true`; if your splash is gone, run `omp config set startup.quiet false` |
+| `hideThinkingBlock` | `false` | `false` | `true` (also toggled by Ctrl+T) hides thinking, but a "Thinking" line still appears while the model thinks and vanishes when it stops, so the screen shakes on every call until it fills. With `false` each thought folds to one "Thought for 3s" row that stays |
 | `startup.changelogMode` | `summary` | `hidden` | Release notes after an update |
 | `tools.xdevNotices` | `true` | `false` | The "xd:// mounted" line each time tools change |
 | `tui.renderSvg`, `tui.autoGraph` | `true`, `auto` | `false`, `off` over SSH | Invites the agent to draw charts your terminal can't show |
 | `display.hideToolActivity` | `false` | `false` for workers you watch, `true` for the first mate if you only read its replies | Hides tool calls and results |
-| `extensionRenderers.transcriptPresenters` | `false` | `true` | Lets the plugin fold its own tool calls to one row |
-| `extensionRenderers.assistantText` | `false` | `true` | Lets the plugin pin its final report card |
+| `extensionRenderers.transcriptPresenters` | `false` | `true` | Lets the plugin hide its own tool calls and advisor notes |
+| `extensionRenderers.assistantText` | `false` | `true` | Lets the plugin hide the agent's text after a nudge, advisor note or final report, and fold long replies |
 
 ## Overlaps with this plugin
 
@@ -196,7 +197,6 @@ todo:
 tui:
   reactions: false
 startup:
-  quiet: true
   checkUpdate: false
   changelogMode: hidden
 dev:

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { wrap } from "../extensions/screen/register";
-import { cardLines, checkQuestions, fold, headline, isOperational, questionLines, timelineEntry } from "../extensions/screen/view";
+import { askMode, BOOKKEEPING_TOOLS, QuietSpans, wrap } from "../extensions/screen/register";
+import { noticeKind, noticesOn } from "../extensions/firstmate/notices";
+import { answersText, cardLines, checkQuestions, dialogQuestions, fold, headline, isOperational, questionLines, timelineEntry } from "../extensions/screen/view";
 
 describe("questions", () => {
 	test("direct questions with options and a recommendation pass", () => {
@@ -21,7 +22,7 @@ describe("questions", () => {
 		expect(checkQuestions([{ ask: "Merge now?", options: ["Yes", "No"], recommend: "Maybe" }])).toContain("must be one of its options");
 	});
 
-	test("questions render as numbered asks with lettered options and how to answer", () => {
+	test("questions render as numbered asks with lettered options", () => {
 		const lines = questionLines([
 			{ ask: "Merge MR !42 now?", options: ["Merge now", "Wait"], recommend: "Merge now", why: "CI is green." },
 			{ ask: "Which limit applies?" },
@@ -31,14 +32,12 @@ describe("questions", () => {
 			"    Options: (a) Merge now  (b) Wait",
 			"    Recommended: Merge now, because CI is green.",
 			"Q2. Which limit applies?",
-			"Answer like: Q1 a, Q2 <answer>",
 		]);
 	});
 });
 
 describe("the pinned card", () => {
 	const card = {
-		version: 2,
 		title: "Raise the pitch gain",
 		overview: "Raised the gain to 1.25. Tests passed.",
 		questions: [{ ask: "Open the MR now?", options: ["Yes", "No"], recommend: "Yes" }],
@@ -48,15 +47,23 @@ describe("the pinned card", () => {
 
 	test("has the outcome, the questions, and each path alone on a line", () => {
 		const lines = cardLines(card);
-		expect(lines[0]).toBe("━━ Final report (v2): Raise the pitch gain ━━");
+		expect(lines[0]).toBe("━━ Final report: Raise the pitch gain ━━");
 		expect(lines).toContain("NEEDS YOU: 1 question");
 		expect(lines).toContain("Q1. Open the MR now?");
 		expect(lines).toContain(card.reportFile);
 		expect(lines).toContain(card.timelineFile);
 	});
 
-	test("says when a revision is on its way", () => {
-		expect(cardLines({ ...card, pending: "An advisor raised a point." })[0]).toBe("… An advisor raised a point.");
+	test("never numbers revisions, and says how to answer", () => {
+		const lines = cardLines({ ...card, answerHint: "/answer opens these one at a time." });
+		expect(lines.join("\n")).not.toMatch(/v2|revis/);
+		expect(lines).toContain("/answer opens these one at a time.");
+	});
+
+	test("with the dialog, the card lists only the asks", () => {
+		const lines = cardLines({ ...card, dialog: true });
+		expect(lines).toContain("Q1. Open the MR now?");
+		expect(lines.join("\n")).not.toContain("Options:");
 	});
 
 	test("says plainly when nothing needs you", () => {
@@ -99,5 +106,72 @@ describe("folding and history", () => {
 	test("timeline entries carry who and when", () => {
 		expect(timelineEntry("direction", "2026-11-13T03:41:40Z", "Do X")).toBe("## 2026-11-13 03:41 · You\n\nDo X\n\n");
 		expect(timelineEntry("report", "2026-11-13T04:00:00Z", "Done")).toContain("· Final report");
+	});
+});
+
+describe("the question dialog", () => {
+	const qs = [
+		{ ask: "Merge MR !42 now?", options: ["Merge now", "Wait"], recommend: "Merge now", why: "CI is green." },
+		{ ask: "Which limit applies?", why: "The spec gives two." },
+	];
+
+	test("each question becomes a tab with the recommendation preselected", () => {
+		const d = dialogQuestions(qs);
+		expect(d[0]).toEqual({
+			id: "q1",
+			header: "Q1",
+			question: "Merge MR !42 now?",
+			options: [{ label: "Merge now", description: "CI is green." }, { label: "Wait" }],
+			recommended: 0,
+		});
+		expect(d[1]).toEqual({ id: "q2", header: "Q2", question: "Which limit applies?\nThe spec gives two.", options: [] });
+	});
+
+	test("answers go back to the agent as one plain message", () => {
+		const text = answersText(qs, [
+			{ id: "q1", selectedOptions: ["Wait"], note: "after lunch" },
+			{ id: "q2", selectedOptions: [], customInput: "35 deg" },
+		]);
+		expect(text).toBe(
+			"My answers to the questions in the final report:\nQ1. Merge MR !42 now?\n    Wait (note: after lunch)\nQ2. Which limit applies?\n    35 deg",
+		);
+	});
+
+	test("opens by itself, except inside Firstmate where only /answer opens it", () => {
+		expect(askMode({})).toBe("auto");
+		expect(askMode({ FM_HOME: "/fm" })).toBe("command");
+		expect(askMode({ FM_HOME: "/fm", OMP_GRAPHS_ASK: "auto" })).toBe("auto");
+		expect(askMode({ OMP_GRAPHS_ASK: "off" })).toBe("off");
+	});
+});
+
+describe("behind the scenes", () => {
+	test("text is hidden from a nudge or final report until you write again", () => {
+		const q = new QuietSpans();
+		expect(q.covers(5)).toBe(false);
+		q.start(10);
+		q.start(12); // already open: no new span
+		expect(q.covers(11)).toBe(true);
+		expect(q.covers(9)).toBe(false);
+		q.end(20);
+		expect(q.covers(19)).toBe(true);
+		expect(q.covers(20)).toBe(false);
+		expect(q.open()).toBe(false);
+	});
+
+	test("only the plugin's own bookkeeping tools are hidden", () => {
+		expect(BOOKKEEPING_TOOLS.has("report_step")).toBe(true);
+		expect(BOOKKEEPING_TOOLS.has("step_done")).toBe(true);
+		expect(BOOKKEEPING_TOOLS.has("bash")).toBe(false);
+		expect(BOOKKEEPING_TOOLS.has("edit")).toBe(false);
+	});
+
+	test("Firstmate's typed notices are recognized by kind", () => {
+		expect(noticeKind("\u2063FIRSTMATE_OP: v1 away-supervisor: check t1")).toBe("away-supervisor");
+		expect(noticeKind("[fm-from-firstmate] do this")).toBe("message");
+		expect(noticeKind(": Firstmate instruction waiting: list ...")).toBeUndefined(); // a worker's doorbell
+		expect(noticeKind("Fix the login test")).toBeUndefined();
+		expect(noticesOn({})).toBe(true);
+		expect(noticesOn({ OMP_GRAPHS_FM_NOTICES: "show" })).toBe(false);
 	});
 });
