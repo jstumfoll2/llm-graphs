@@ -233,7 +233,7 @@ extensions/cleanup/register.ts daily background cleanup, /cleanup
 extensions/firstmate/fm.ts   Firstmate's inbox, status, busy-event and state files (pure helpers)
 extensions/firstmate/register.ts worker mode: inbox delivery, status lines, progress, state file
 extensions/parts.ts          which parts are on (OMP_GRAPHS_DISABLE, Firstmate defaults)
-firstmate/                   a patch for Firstmate itself (one updating wake line), with its own README
+firstmate/                   patches and merge scripts for Firstmate itself, with their own README
 extensions/screen/view.ts    final report card, question rules, folding, timeline (pure)
 extensions/screen/register.ts pinned card, /jump, folding and advisor rows
 agents/*.md                  the three workers lead mode hands steps to
@@ -255,7 +255,7 @@ SCENARIO=firstmate OMP=$(which omp) test/e2e/run.sh  # end to end: worker under 
 FIRSTMATE=/path/to/firstmate test/e2e/fm-wake-widget.sh  # the Firstmate wake patch, real omp + tmux
 ```
 
-Tested with OMP 18.18.8 and 18.20.0. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
+Tested with OMP 18.18.8, 18.20.0 and 18.20.3. `run.sh` clears inherited omp, git and `OMP_GRAPHS_*` settings, so your own setup does not leak into a run. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
 
 ## Background
 

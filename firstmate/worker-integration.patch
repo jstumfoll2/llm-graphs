@@ -12,26 +12,6 @@ index b366ab8..2edc5ee 100644
  1. Peek the pane, and check the task's steering inbox (`state/<id>.inbox/`) for unhandled `*.msg` records - a stale wake naming an unread firstmate instruction means the worker never acknowledged a durable steer, and the record itself shows exactly what was intended.
     A worker whose current state is a declared `paused:` wait has only said what it is waiting for, so verify the condition it names - its own background job's terminal record or process, for example - and when that condition has already cleared, steer the worker to read the result and resume instead of reporting the wait as healthy.
  2. If the crewmate is waiting on a question its brief already answers, follow the [T3 pending-request procedure](../../../docs/t3code-backend.md#push-events-and-polling-fallback) for a T3 runtime request.
-diff --git a/.omp/fm-worker-overlay.yml b/.omp/fm-worker-overlay.yml
-index ba914e3..23af42f 100644
---- a/.omp/fm-worker-overlay.yml
-+++ b/.omp/fm-worker-overlay.yml
-@@ -25,3 +25,15 @@ retry:
-   # `confirm` pops a dialog when a usage window runs low; `auto` lets omp fall
-   # through the captain's own fallback chain without a keystroke.
-   usageReservePolicy: auto
-+advisor:
-+  # Only matters when the captain turned the advisor on in config.yml (it is
-+  # off by default). A worker's own advisor otherwise wakes it after its final
-+  # answer for every "concern" note, which shows up as two or three rounds of
-+  # re-summarizing. Validation already reviews the change, so a worker only
-+  # continues for a blocker, and gets at most one note per review.
-+  continueSeverity: blocker
-+  maxNotesPerUpdate: 1
-+recap:
-+  # The idle recap asks the model for a summary of an unattended pane; nobody
-+  # reads it, and on a shared local model it takes a slot from real work.
-+  enabled: false
 diff --git a/bin/fm-brief.sh b/bin/fm-brief.sh
 index fab4f16..d2c89c0 100755
 --- a/bin/fm-brief.sh

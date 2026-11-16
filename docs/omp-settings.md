@@ -57,7 +57,7 @@ Subagents (OMP's `task` tool) never get an advisor unless an agent's frontmatter
 
 Per-advisor settings can also come from a `WATCHDOG.yml` (in `~/.omp/agent/`, or `.omp/` in a repo), which lists advisors with `name`, `model`, `reviewMode`, `reviewInterval`, `maxNotesPerUpdate`, `scope` (`main`, `subagent` or `all`) and `instructions`. When that file exists, its cadence settings win over `advisor.reviewMode` and `advisor.reviewInterval`.
 
-[`firstmate/worker-integration.patch`](../firstmate/worker-integration.patch) sets `continueSeverity: blocker` and `maxNotesPerUpdate: 1` for workers only. For the first mate, add the same two lines to your own `config.yml`. The plugin's own advisor cap (one note per step) stays as a second limit; the two don't conflict.
+[`firstmate/merge-worker-overlay.mjs`](../firstmate/README.md#merge-worker-overlaymjs) sets `continueSeverity: blocker` and `maxNotesPerUpdate: 1` for workers only. For the first mate, add the same two lines to your own `config.yml`. The plugin's own advisor cap (one note per step) stays as a second limit; the two don't conflict.
 
 ## Reply style
 

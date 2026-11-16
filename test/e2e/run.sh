@@ -12,10 +12,17 @@ SCENARIO="${SCENARIO:-report}"
 [ "$SCENARIO" = ship ] && export SCRIPT="$HERE/ship-script.json"
 [ "$SCENARIO" = lead ] && export SCRIPT="$HERE/lead-script.json"
 [ "$SCENARIO" = firstmate ] && export SCRIPT="$HERE/firstmate-script.json"
+# Keep the caller's setup out: omp and git config dirs, this plugin's own
+# switches (OMP_GRAPHS_DISABLE in a real home turns parts off), Firstmate's
+# task variables, and global or system git config (hooks, signing, init
+# templates) that can make the scripted git calls fail.
+unset PI_CODING_AGENT_DIR PI_CONFIG_DIR PI_CONFIG_FILES XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME GLAB_CONFIG_DIR
+unset FM_TASK_ID FM_TASK_INBOX FM_HOME
+for v in $(env | sed -n 's/^\(OMP_GRAPHS_[A-Z_]*\|OMP_GRAPH_[A-Z_]*\|OMP_REPORT_[A-Z_]*\|GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 WORK="$(mktemp -d)"
 trap 'kill $MOCK 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 
-export HOME="$WORK/home" OMP_REPORT_DIR="$WORK/reports" OMP_REPORT_NUDGE_AFTER=1 PORT=18080
+export HOME="$WORK/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null OMP_REPORT_DIR="$WORK/reports" OMP_REPORT_NUDGE_AFTER=1 PORT=18080
 mkdir -p "$HOME/.omp/agent"
 cat > "$HOME/.omp/agent/models.yml" <<EOF
 providers:
@@ -41,6 +48,9 @@ echo "gain = 1.0" > gain.txt && git add . && git commit -qm init -q
 if [ "$SCENARIO" = ship ]; then
 	git branch -M main
 	git init -q --bare "$WORK/remote.git" && git remote add origin "$WORK/remote.git" && git push -q origin main
+	# The scenario tests verify, open_mr and watch_pipeline, not the model's git
+	# use, so the feature branch is made here rather than by a scripted bash call.
+	git switch -q -c feature/pitch-gain
 	export PATH="$HERE/bin:$PATH" FAKE_GLAB_LOG="$WORK/glab.log" OMP_GRAPHS_CONFIG_DIR="$WORK/cfg"
 	mkdir -p "$WORK/cfg"
 	cat > "$WORK/cfg/repo.json" <<'CFG'
@@ -93,6 +103,7 @@ if [ "$SCENARIO" = ship ]; then
 	grep -q 'Files changed since the last passing verify' "$WORK/mock.log" || fail "step_done was not gated on verify"
 	grep -q 'Verify FAILED' "$WORK/mock.log" || fail "first verify should fail"
 	grep -q 'Verify passed' "$WORK/mock.log" || fail "second verify should pass"
+	grep -q 'mr create' "$WORK/glab.log" || fail "open_mr never reached glab (see its refusal in the mock log above)"
 	grep -q 'mr create --source-branch feature/pitch-gain --target-branch main' "$WORK/glab.log" || fail "glab mr create not called right"
 	grep -q -- '--draft' "$WORK/glab.log" || fail "draft flag missing"
 	git -C "$WORK/remote.git" rev-parse -q --verify feature/pitch-gain >/dev/null || fail "branch not pushed"
