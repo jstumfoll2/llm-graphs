@@ -19,7 +19,7 @@ The task's steps live in a file, not in the model's memory. Code decides what is
 - **No going quiet.** If the agent stops with steps left, it gets a follow-up naming the open step. After 3 nudges with no progress it stops nudging and warns you. It doesn't nudge when its last message was a question for you.
 - **Advisor capped.** The first advisor note during a step reaches the agent. Later ones in the same step are held back and listed in the report, which ends the advisor back-and-forth loop.
 - **One list.** Calls to OMP's own `todo` tool are refused with a pointer to the step list. Subagents can't move the lead's plan.
-- **Always in view.** The plan shows above the prompt (the last 8 lines) and in the system prompt at every turn. `/plan` opens the whole list with nothing cut: every step, its evidence or block reason, and your queued asks.
+- **Always in view, in OMP's own look.** The plan shows above the prompt drawn like OMP's built-in TODO list: the bold `TODO` title, the progress spine and tail, checkboxes, done steps struck through in green, the active step highlighted, substeps hanging under their step, and a window that keeps the active step in view (`… N more steps` for the rest). Blocked steps and your queued asks are marked. Like OMP's list, a finished list leaves the screen after 60 seconds. The plan is also in the system prompt at every turn. `/plan` opens the whole list with nothing cut: every step, its evidence or block reason, and your queued asks.
 - **Readable from any shell.** The same whole list is rewritten to `plan.md` in the task folder on every change, so you can `less` it over SSH while the agent works. `/plan file` prints its path.
 
 ## Verify and merge request
@@ -147,6 +147,7 @@ The report is laid out the same way every time: Summary, Needs your decision, Pl
 | `OMP_GRAPH_MAX_NUDGES` | `3` | Nudges with no progress before it warns you instead |
 | `OMP_GRAPH_ADVISOR_PER_STEP` | `1` | Advisor notes the agent sees per step |
 | `OMP_GRAPH_KEEP_TODO` | unset | Set to `1` to allow OMP's own todo tool alongside the step list |
+| `OMP_GRAPH_HUD_CLEAR_SEC` | `60` | Seconds a finished step list stays above the prompt; `-1` keeps it |
 | `OMP_GRAPHS_CONFIG_DIR` | `~/.omp/llm-graphs/repos` | Where per-repo verify and MR configs live (must be outside the checkout) |
 | `OMP_GRAPHS_TRUST_REPO_CONFIG` | unset | `1` also reads `.llm-graphs.json` from the repo top. Off because the agent can write that file |
 | `OMP_GRAPH_LEAD` | unset | `1` turns lead mode on, `0` forces it off |
@@ -227,6 +228,7 @@ When Firstmate launches omp for a task it sets `FM_TASK_ID` and `FM_TASK_INBOX`.
 extensions/report/index.ts   entry point: hooks, report tools, /report
 extensions/graph/plan.ts     step list rules (pure functions)
 extensions/graph/register.ts step tools, /ask, /plan, advisor gate, nudges
+extensions/graph/hud.ts      the list above the prompt, drawn like OMP's TODO (pure)
 extensions/verify/config.ts  per-repo config lookup
 extensions/verify/state.ts   verify, MR and pipeline records (pure helpers)
 extensions/verify/register.ts verify, open_mr, watch_pipeline, /verify
@@ -239,7 +241,7 @@ extensions/firstmate/fm.ts   Firstmate's inbox, status, busy-event and state fil
 extensions/firstmate/register.ts worker mode: inbox delivery, status lines, progress, state file
 extensions/firstmate/notices.ts the first mate's window: typed Firstmate notices hidden, latest in the footer
 extensions/parts.ts          which parts are on (OMP_GRAPHS_DISABLE, Firstmate defaults)
-firstmate/                   a patch for Firstmate itself (one updating wake line), with its own README
+firstmate/                   patches and merge scripts for Firstmate itself, with their own README
 extensions/screen/view.ts    final report card, question rules, folding, timeline (pure)
 extensions/screen/register.ts pinned card, question dialog, /answer, /jump, hiding and folding
 agents/*.md                  the three workers lead mode hands steps to
@@ -261,7 +263,7 @@ SCENARIO=firstmate OMP=$(which omp) test/e2e/run.sh  # end to end: worker under 
 FIRSTMATE=/path/to/firstmate test/e2e/fm-wake-widget.sh  # the Firstmate wake patch, real omp + tmux
 ```
 
-Tested with OMP 18.18.8 and 18.20.0. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
+Tested with OMP 18.18.8, 18.20.0 and 18.20.3. `run.sh` clears inherited omp, git and `OMP_GRAPHS_*` settings, so your own setup does not leak into a run. In print mode (`omp -p`), use `--no-pty`: a PTY-backed bash call keeps OMP from exiting at the end of the run.
 
 ## Background
 

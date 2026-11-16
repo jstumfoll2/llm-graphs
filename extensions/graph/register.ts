@@ -5,6 +5,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TaskStore } from "../report/store";
+import { hudRows, type HudTheme } from "./hud";
 import {
 	active,
 	addSteps,
@@ -25,6 +26,7 @@ import {
 const MAX_NUDGES = Number(process.env.OMP_GRAPH_MAX_NUDGES ?? 3); // nudges without progress before telling you
 const ADVISOR_PER_STEP = Number(process.env.OMP_GRAPH_ADVISOR_PER_STEP ?? 1); // advisor notes the model sees per step
 const HIDE_TODO = process.env.OMP_GRAPH_KEEP_TODO !== "1"; // one list, not two
+const HUD_CLEAR_SEC = Number(process.env.OMP_GRAPH_HUD_CLEAR_SEC ?? 60); // a finished list leaves the screen after this, like OMP's todo; <0 keeps it
 
 export interface GraphHooks {
 	/** Text added to the system prompt: the rules plus where the task is now. */
@@ -73,17 +75,43 @@ export function registerGraph(
 		if (ctx) showPlan(ctx);
 	}
 
+	let clearTimer: ReturnType<typeof setTimeout> | undefined;
 	function showPlan(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
+		if (clearTimer) clearTimeout(clearTimer), (clearTimer = undefined);
 		const p = plan();
 		if (!p?.steps.length) {
-			ctx.ui.setWidget("llmg-plan", []);
+			ctx.ui.setWidget("llmg-plan", undefined);
 			return;
 		}
-		const left = remaining(p).length;
-		ctx.ui.setWidget("llmg-plan", [`Plan: ${p.steps.length - left}/${p.steps.length} done${p.inbox.length ? ` · ${p.inbox.length} ask(s) queued` : ""}`, ...planLines(p, 8)]);
+		// Drawn like OMP's own TODO list (see hud.ts); a snapshot so a later
+		// change to the plan repaints through here, not mid-render.
+		const snapshot = JSON.parse(JSON.stringify(p)) as Plan;
+		ctx.ui.setWidget(
+			"llmg-plan",
+			(_tui, theme) => {
+				let cache: { width: number; rows: string[] } | undefined;
+				return {
+					render(width: number) {
+						if (cache?.width !== width) cache = { width, rows: hudRows(snapshot, theme as HudTheme, width) };
+						return cache.rows;
+					},
+					invalidate() {
+						cache = undefined;
+					},
+				};
+			},
+			{ placement: "aboveEditor" },
+		);
 		const cur = active(p);
 		ctx.ui.setStatus("llmg-step", cur ? `step ${cur.id}/${p.steps.length}` : "steps done");
+		if (!remaining(p).length && !p.steps.some(s => s.status === "blocked") && HUD_CLEAR_SEC >= 0) {
+			clearTimer = setTimeout(() => {
+				clearTimer = undefined;
+				ctx.ui.setWidget("llmg-plan", undefined);
+			}, HUD_CLEAR_SEC * 1000);
+			clearTimer.unref?.();
+		}
 	}
 
 	function describeNext(next: PlanStep | undefined, fromInbox: PlanStep[]): string {

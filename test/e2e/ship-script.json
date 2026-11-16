@@ -7,7 +7,7 @@
 	{ "tool": "verify", "args": {} },
 	{ "tool": "step_done", "args": { "id": 1, "evidence": "Verify passed: the gain check found gain = 1.25 in gain.txt." } },
 	{ "tool": "report_step", "args": { "title": "Changed the pitch gain", "done": "Set the pitch gain to 1.25 in gain.txt. The first try used 1.2 and the check caught it; the second passed." } },
-	{ "tool": "bash", "args": { "command": "git switch -c feature/pitch-gain && git commit -qam 'Raise pitch gain to 1.25'" } },
+	{ "tool": "bash", "args": { "command": "git commit -qam 'Raise pitch gain to 1.25' && git rev-parse --abbrev-ref HEAD" } },
 	{ "tool": "open_mr", "args": { "title": "Raise pitch gain to 1.25" } },
 	{ "tool": "watch_pipeline", "args": {} },
 	{ "tool": "step_done", "args": { "id": 2, "evidence": "Opened merge request 7 and the pipeline 99 finished with status success." } },
