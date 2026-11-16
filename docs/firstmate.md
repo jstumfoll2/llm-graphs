@@ -20,7 +20,7 @@ The plugin also turns off the parts Firstmate already owns. Lead mode is off bec
 
 ## Changes on the Firstmate side
 
-[`firstmate/worker-integration.patch`](../firstmate/worker-integration.patch) makes items 3, 4 and 5 below for you, plus advisor limits in the worker overlay ([firstmate/README.md](../firstmate/README.md#worker-integrationpatch)). Item 2 is left out: a brief is written before the worker's harness is known, and the old inbox instructions are harmless with the plugin because the inbox is already empty.
+[`firstmate/worker-integration.patch`](../firstmate/worker-integration.patch) makes items 3, 4 and 5 below for you, and [`firstmate/merge-worker-overlay.mjs`](../firstmate/README.md#merge-worker-overlaymjs) adds advisor limits to the worker overlay. Item 2 is left out: a brief is written before the worker's harness is known, and the old inbox instructions are harmless with the plugin because the inbox is already empty.
 
 Each of these is small, and the fleet keeps working if you skip one: the plugin only writes through Firstmate's existing formats and scripts.
 
@@ -86,7 +86,7 @@ If your fork has a note like "no repo config exists for any checkout" (for examp
 In the first mate's omp session the plugin pins one final report above the prompt, with explicit questions and clickable paths, and `/jump` goes back to your directions and earlier reports (see the README, "The omp window"). Two things only Firstmate can change:
 
 - **The one-line notices.** Firstmate's omp watcher (`.omp/extensions/fm-primary-omp-watch.ts`) delivers wakes with `pi.sendUserMessage(...)`, so each one is a new user message, and omp gives extensions no way to fold, edit or intercept another extension's user messages. [`firstmate/omp-wake-widget.patch`](../firstmate/README.md) changes the watcher to send each wake as a hidden custom message and redraw one widget line in place, so the model gets the same text and the wall of notices becomes one updating line. Apply it to your Firstmate checkout; [firstmate/README.md](../firstmate/README.md) has the steps and a test.
-- **Wording.** The questions in the pinned card follow a fixed shape that the plugin enforces. The first mate's other chat follows `AGENTS.md` section 9 ("Escalation and captain etiquette"). [`firstmate/reply-shape.patch`](../firstmate/README.md#reply-shapepatch) adds a reply shape there: point first, at most about five lines, numbered questions last. Also set `personality: pragmatic` in omp ([docs/omp-settings.md](omp-settings.md#reply-style)).
+- **Wording.** The questions in the pinned card follow a fixed shape that the plugin enforces. The first mate's other chat follows the "Escalation and captain etiquette" section of `AGENTS.md` (section 9 upstream). [`firstmate/apply-reply-shape.mjs`](../firstmate/README.md#apply-reply-shapemjs) adds a reply shape there: point first, at most about five lines, numbered questions last. Also set `personality: pragmatic` in omp ([docs/omp-settings.md](omp-settings.md#reply-style)).
 
 ## What to stop using in a fleet
 

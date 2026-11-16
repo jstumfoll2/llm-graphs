@@ -1,18 +1,29 @@
 # Firstmate patches
 
-Three patches for your Firstmate fork, each independent. Apply any of them with `git apply --check <patch>` then `git apply <patch>` from your Firstmate checkout. All are written against upstream `kunchenguid/firstmate` at commit `427056c`.
+Changes for your Firstmate fork, each independent. All are written against upstream `kunchenguid/firstmate` at commit `427056c`. Run them from your Firstmate checkout.
 
-| Patch | Changes | What you get |
-| --- | --- | --- |
-| [`reply-shape.patch`](reply-shape.patch) | `AGENTS.md` section 9 | Shorter first mate replies with the point first and questions last |
-| [`worker-integration.patch`](worker-integration.patch) | `bin/fm-teardown.sh`, `bin/fm-brief.sh`, `.omp/fm-worker-overlay.yml`, `stuck-crewmate-recovery` skill | The Firstmate side of the plugin's worker mode, plus advisor limits for workers |
-| [`omp-wake-widget.patch`](omp-wake-widget.patch) | `.omp/extensions/fm-primary-omp-watch.ts` | One updating line for watcher wakes in an omp first mate |
+| Change | How to apply | Touches | What you get |
+| --- | --- | --- | --- |
+| [`apply-reply-shape.mjs`](apply-reply-shape.mjs) | `node apply-reply-shape.mjs` | `AGENTS.md`, "Escalation and captain etiquette" section | Shorter first mate replies with the point first and questions last |
+| [`worker-integration.patch`](worker-integration.patch) | `git apply` | `bin/fm-teardown.sh`, `bin/fm-brief.sh`, `stuck-crewmate-recovery` skill | The Firstmate side of the plugin's worker mode |
+| [`merge-worker-overlay.mjs`](merge-worker-overlay.mjs) | `node merge-worker-overlay.mjs` | `.omp/fm-worker-overlay.yml` | Advisor limits and no idle recap for workers |
+| [`omp-wake-widget.patch`](omp-wake-widget.patch) | `git apply` | `.omp/extensions/fm-primary-omp-watch.ts` | One updating line for watcher wakes in an omp first mate |
 
-## reply-shape.patch
+For a `.patch`, run `git apply --check <patch>` then `git apply <patch>`. The two `.mjs` scripts need only `node`. Pass `--check` to see what they would change without writing, and pass the checkout path if you are not in it. Both are safe to run twice.
 
-Section 9 ("Escalation and captain etiquette") is the part of Firstmate's `AGENTS.md` that governs every message the first mate sends you. It says what to include and which internal words to avoid, but not how long a reply is or where questions go. Its escalation rule also said to *lead with evidence*, then options, then a recommendation, which is what put the question in the middle or at the bottom of a long message.
+The two scripts are scripts rather than patches because forks drift in exactly those places. A patch is anchored to line numbers and surrounding text, so it breaks when a fork renumbers a section or already has an `advisor:` block.
 
-The patch adds a "Reply shape" block at the top of section 9:
+## apply-reply-shape.mjs
+
+The "Escalation and captain etiquette" section of Firstmate's `AGENTS.md` (section 9 upstream) governs every message the first mate sends you. It says what to include and which internal words to avoid, but not how long a reply is or where questions go. Its escalation rule also said to *lead with evidence*, then options, then a recommendation, which is what put the question in the middle or at the bottom of a long message.
+
+```sh
+cd /path/to/firstmate
+node /path/to/llm-graphs/firstmate/apply-reply-shape.mjs --check   # see what changes
+node /path/to/llm-graphs/firstmate/apply-reply-shape.mjs
+```
+
+The script finds the section by its heading name, whatever its number, so `## 8. Escalation and captain etiquette` works the same as `## 9. ...`. It adds a "Reply shape" block at the top of that section:
 
 1. First line is the outcome, or the ask when you owe a decision.
 2. Then at most about five short lines of facts that change what you'd do; longer detail goes in a linked report.
@@ -25,7 +36,7 @@ The patch adds a "Reply shape" block at the top of section 9:
    No question mark anywhere earlier in the message.
 4. Plain sentences under about 25 words, no stacked clauses.
 
-It also changes the escalation rule to lead with the ask, and says batched updates go between the first line and the questions. The captain address, nautical tone, translation table and final-message rule are unchanged. No Firstmate test checks section 9's wording.
+It also rewrites two lines inside that section only: the escalation rule now leads with the ask, and batched updates go between the first line and the questions. If your fork reworded either line, the script still adds the block, prints the old and new text for the line it couldn't find, and exits with status 1 so you can make that edit by hand. The captain address, nautical tone, translation table and final-message rule are unchanged. No Firstmate test checks this section's wording.
 
 Pair it with `personality: pragmatic` in your omp `config.yml`. OMP's default personality tells the model to write fragments and name exact files and state fields, which works against these rules. See [docs/omp-settings.md](../docs/omp-settings.md#reply-style).
 
@@ -36,9 +47,25 @@ The plugin's worker mode (see [docs/firstmate.md](../docs/firstmate.md)) works w
 - **Teardown** removes `state/<id>.llmg.json` with the task's other state files (task, remote and secondmate-child cleanup).
 - **Stuck-worker recovery** reads `state/<id>.llmg.json` before looking at the pane: active step, last tool time, blocked step and reason.
 - **Briefs** tell every worker that a message a tool already delivered is already acknowledged, and that a `blocked:` line a tool already wrote shouldn't be written twice. Harmless for workers without the plugin.
-- **Worker overlay** (`.omp/fm-worker-overlay.yml`) adds `advisor.continueSeverity: blocker`, `advisor.maxNotesPerUpdate: 1` and `recap.enabled: false`. The advisor lines only matter if you turned the advisor on; they stop a worker re-summarizing for every "concern" note after its final answer.
 
-Checked: `bash -n` on both scripts, Firstmate's `tests/fm-brief.test.sh` (43 passed), and every overlay key against OMP 18.20's settings list. `tests/fm-teardown.test.sh` couldn't run here because it needs `tasks-axi` 0.2.6; run it in your fork.
+Checked: `bash -n` on both scripts and Firstmate's `tests/fm-brief.test.sh` (43 passed). `tests/fm-teardown.test.sh` couldn't run here because it needs `tasks-axi` 0.2.6; run it in your fork.
+
+## merge-worker-overlay.mjs
+
+Adds three settings to the worker overlay (`.omp/fm-worker-overlay.yml`) that Firstmate passes to every omp worker:
+
+- `advisor.continueSeverity: blocker` and `advisor.maxNotesPerUpdate: 1`. These only matter if you turned the advisor on. They stop a worker re-summarizing for every "concern" note after its final answer.
+- `recap.enabled: false`. The idle recap summarizes an unattended pane for nobody.
+
+```sh
+cd /path/to/firstmate
+node /path/to/llm-graphs/firstmate/merge-worker-overlay.mjs --check
+node /path/to/llm-graphs/firstmate/merge-worker-overlay.mjs
+```
+
+These lines used to be part of `worker-integration.patch`, which appended a new top-level `advisor:` block. In a fork whose overlay already had one, say with `enabled: false`, that made a duplicate key, and YAML loaders either reject the file or keep only the last block, which can drop your own settings. The script merges into the existing block instead. It leaves keys it doesn't set alone, adds missing ones, and changes a key only when the value differs, printing each change. If the overlay already has a duplicate top-level key, it stops and asks you to merge that by hand first.
+
+Every key was checked against OMP 18.20's settings list.
 
 ## omp-wake-widget.patch: one updating wake line instead of a wall of messages
 
