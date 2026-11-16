@@ -1,26 +1,67 @@
 /**
- * The omp window: one final report, pinned above the prompt.
+ * The omp window: the work, one final report pinned above the prompt, and
+ * nothing in between.
  *
  *  - report_summary saves a draft. The card is shown only when the agent has
- *    really finished (agent_end with nothing queued), so an advisor review
- *    that sends the agent back to work is folded into the report instead of
- *    producing a second one. A later report_summary replaces the card.
+ *    really finished (agent_end with nothing queued). A later report_summary
+ *    replaces the card in place: no "v2", no second transcript line.
  *  - The card holds the outcome, the questions for you, and the full paths of
  *    the report and the timeline, each on its own line so a terminal click
- *    (ctrl+click in VS Code) opens them.
- *  - Advisor cards in the transcript are drawn as one row, and long finished
- *    replies are folded to their first lines (display only; both need omp's
- *    extensionRenderers settings, see README).
+ *    (ctrl+click in VS Code) opens them. One short line in the transcript links
+ *    the report, once per direction from you.
+ *  - Questions are answered in omp's own question dialog (one tab per
+ *    question, the recommendation preselected). It opens by itself when the
+ *    agent finishes, or with /answer; inside Firstmate only with /answer, so
+ *    keystrokes Firstmate types into the pane can never answer for you.
+ *  - Behind the scenes: the plugin's nudges are hidden, its own bookkeeping
+ *    tool calls (report_step, step_done, ...) and advisor notes are not drawn,
+ *    and what the agent writes after a nudge, an advisor note or its final
+ *    report is not drawn either, until you write again. All of it still reaches
+ *    the model, the session and the report. Needs omp's extensionRenderers
+ *    settings (see README); OMP_GRAPHS_QUIET=0 shows everything again.
  *  - /jump lists your directions and every report, newest first, and shows
  *    the one you pick in full. timeline.md in the task folder holds the same.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { type Card, cardLines, fold, isOperational, type Question, reportBody, timelineEntry } from "./view";
+import { answersText, type Card, cardLines, type DialogAnswer, dialogQuestions, fold, isOperational, type Question, reportBody, timelineEntry } from "./view";
 
 const FOLD_LINES = Number(process.env.OMP_GRAPHS_FOLD_LINES ?? 30);
 const WIDGET = "llmg-final";
+const QUIET = process.env.OMP_GRAPHS_QUIET !== "0";
+/** Tool calls that only keep the plugin's books; their effect shows in the plan widget and the report. */
+export const BOOKKEEPING_TOOLS = new Set(["report_step", "report_summary", "plan_steps", "add_steps", "step_done", "step_blocked", "step_reopen", "lesson_add", "lesson_helped"]);
+
+/** When the question dialog opens: "auto" when the agent finishes, "command" only with /answer, "off" never. */
+export function askMode(env: NodeJS.ProcessEnv = process.env): "auto" | "command" | "off" {
+	const v = env.OMP_GRAPHS_ASK?.trim().toLowerCase();
+	if (v === "auto" || v === "command" || v === "off") return v;
+	if (v === "0") return "off";
+	// Firstmate types into its panes; an open dialog would take those keystrokes as answers.
+	return env.FM_HOME || env.FM_TASK_ID ? "command" : "auto";
+}
+
+/** Half-open time ranges in which the agent's text is not drawn. */
+export class QuietSpans {
+	private spans: { from: number; to?: number }[] = [];
+	start(now = Date.now()): void {
+		const last = this.spans.at(-1);
+		if (last && last.to === undefined) return;
+		this.spans.push({ from: now });
+		if (this.spans.length > 200) this.spans.splice(0, this.spans.length - 200);
+	}
+	end(now = Date.now()): void {
+		const last = this.spans.at(-1);
+		if (last && last.to === undefined) last.to = now;
+	}
+	open(): boolean {
+		return this.spans.at(-1)?.to === undefined && this.spans.length > 0;
+	}
+	covers(ts: number): boolean {
+		return this.spans.some(s => ts >= s.from && (s.to === undefined || ts < s.to));
+	}
+}
 
 interface Entry {
 	kind: "direction" | "report";
@@ -34,10 +75,13 @@ export interface ScreenHooks {
 	draft(d: { title: string; overview: string; questions: Question[]; reportFile: string; dir: string }): string;
 	/**
 	 * Call from the plugin's agent_end handler (main agent only). When the agent is
-	 * really done (nothing queued), the draft is shown. An advisor review that sends
-	 * it back to work comes before that, so it is folded into the same report.
+	 * really done (nothing queued), the draft is shown.
 	 */
 	agentEnd(continuing: boolean, ctx: ExtensionContext): void;
+	/** The plugin sent the agent a hidden nudge: what it writes next is not drawn. */
+	nudged(): void;
+	/** A final report was drafted since your last message. */
+	summarized(): boolean;
 	/** Clear the pinned card. */
 	hide(ctx: ExtensionContext): void;
 	/** Path of timeline.md for a task folder. */
@@ -46,16 +90,20 @@ export interface ScreenHooks {
 
 export const SCREEN_RULES = `## Talking to the user (llm-graphs)
 - While you work, keep chat replies to one or two plain sentences. Never write a summary, status report or list of corrections in chat.
-- When the task is done or blocked, call report_summary once with the complete final report. It is shown to the user pinned above the prompt; your chat reply after it is one line.
+- When the task is done or blocked, call report_summary once with the complete final report. It is shown to the user pinned above the prompt; do not repeat it in chat.
 - If an advisor note or a check sends you back to work after report_summary, fix it, then call report_summary again with the complete corrected report. It replaces the earlier one. Do not describe the correction in chat.
-- Anything you need from the user goes in report_summary "questions": one decision per question, ending in "?", with the options and your recommendation. Ask for the decision itself ("Merge MR !42 now?"), not around it ("Let me know if you'd like...").`;
+- Anything you need from the user goes in report_summary "questions": one decision per question, ending in "?", with the options and your recommendation. The user answers them in a question dialog. Ask for the decision itself ("Merge MR !42 now?"), not around it ("Let me know if you'd like..."). Do not use the ask tool for these.`;
 
-export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | undefined }): ScreenHooks {
+export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | undefined; firstmateWorker: () => boolean }): ScreenHooks {
 	let ui: ExtensionContext | undefined;
 	let draft: (Card & { dir: string }) | undefined;
 	let shown: (Card & { at: number }) | undefined;
-	let version = 0;
+	let linked = false; // the transcript already has a report line since your last message
+	let summarizedSinceInput = false;
+	let asking = false;
+	const quiet = new QuietSpans();
 	const entries: Entry[] = [];
+	const mode = () => (deps.firstmateWorker() ? "off" : askMode());
 
 	const timelineFile = (dir: string) => path.join(dir, "timeline.md");
 
@@ -74,28 +122,88 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 		ui.ui.setWidget(WIDGET, (_tui, theme) => linesComponent(lines, theme), { placement: "aboveEditor" });
 	}
 
+	function answerHint(): string | undefined {
+		const m = mode();
+		if (m === "off") return "Answer by writing back, e.g. \"Q1 yes\".";
+		return "/answer opens these one at a time.";
+	}
+
+	/** Your next message, or the dialog's answers: the agent is working for you again. */
+	function userSpoke(): void {
+		quiet.end();
+		linked = false;
+		summarizedSinceInput = false;
+	}
+
+	async function ask(ctx: ExtensionContext): Promise<void> {
+		const card = shown;
+		if (!card?.questions.length || asking) return;
+		const dialog = (ctx.ui as { askDialog?: (q: unknown[], o?: unknown) => Promise<unknown> }).askDialog;
+		if (!ctx.hasUI || typeof dialog !== "function") {
+			ctx.hasUI && ctx.ui.notify("This omp has no question dialog; answer by writing back.", "warning");
+			return;
+		}
+		asking = true;
+		try {
+			const r = (await dialog.call(ctx.ui, dialogQuestions(card.questions))) as { kind?: string; results?: DialogAnswer[] } | undefined;
+			if (r?.kind !== "submit" || !r.results) return; // cancelled, or "chat about it": the card keeps the questions
+			if (shown !== card) return; // replaced meanwhile
+			const text = answersText(card.questions, r.results);
+			userSpoke();
+			shown = { ...card, questions: [], answerHint: undefined };
+			paint();
+			await pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+		} catch {
+			// display only: the questions stay on the card
+		} finally {
+			asking = false;
+		}
+	}
+
+	function whenIdle(ctx: ExtensionContext, fn: () => void, tries = 0): void {
+		if (ctx.isIdle()) return fn();
+		if (tries < 100) setTimeout(() => whenIdle(ctx, fn, tries + 1), 100);
+	}
+
 	function publish(ctx: ExtensionContext): void {
 		if (!draft) return;
 		const d = draft;
 		draft = undefined;
-		shown = { ...d, pending: undefined, at: Date.now() };
+		const card = { ...d, answerHint: d.questions.length ? answerHint() : undefined, dialog: mode() !== "off", at: Date.now() };
+		shown = card;
 		ui = ctx;
-		append(d.dir, { kind: "report", ts: new Date().toISOString(), label: `Final report${d.version > 1 ? ` v${d.version}` : ""}: ${d.title}`, body: reportBody(d) });
+		append(d.dir, { kind: "report", ts: new Date().toISOString(), label: `Final report: ${d.title}`, body: reportBody(d) });
 		paint();
-		// One short, findable line in the transcript; the card itself stays pinned. Sent once the
-		// session is idle: sent earlier it would be queued as a follow-up and start another turn.
-		const line = `Final report${d.version > 1 ? ` v${d.version}` : ""}: ${d.title}. ${d.questions.length ? `${d.questions.length} question(s) for you. ` : ""}${d.reportFile}`;
-		let tries = 0;
-		const send = () => {
-			if (shown?.version !== d.version) return; // replaced meanwhile
-			if (!ctx.isIdle() && tries++ < 100) return void setTimeout(send, 100);
-			if (ctx.isIdle()) pi.sendMessage({ customType: "llmg-final", content: line, display: true }, { triggerTurn: false });
-		};
-		setTimeout(send, 50);
+		// One short, findable line in the transcript per direction from you; a revised report is
+		// the same file and only redraws the card. Sent once the session is idle: sent earlier it
+		// would be queued as a follow-up and start another turn.
+		const needLine = !linked;
+		linked = true;
+		setTimeout(
+			() =>
+				whenIdle(ctx, () => {
+					if (shown !== card) return;
+					if (needLine) {
+						const line = `Final report: ${d.title}. ${d.questions.length ? `${d.questions.length} question(s) for you. ` : ""}${d.reportFile}`;
+						pi.sendMessage({ customType: "llmg-final", content: line, display: true }, { triggerTurn: false });
+					}
+					if (card.questions.length && mode() === "auto") void ask(ctx);
+				}),
+			50,
+		);
 	}
 
 	pi.on("session_start", async (_e, ctx) => {
 		if (ctx.agent?.kind !== "sub") ui = ctx;
+	});
+
+	// You wrote something: the agent's replies are drawn again.
+	pi.on("input", async (event, ctx) => {
+		if (ctx.agent?.kind === "sub" || event.source === "extension") return undefined;
+		const text = (event.text ?? "").trim();
+		if (!text || isOperational(text)) return undefined;
+		userSpoke();
+		return undefined;
 	});
 
 	// Your directions, for /jump and the timeline. Firstmate's own notices and slash commands are not.
@@ -109,24 +217,17 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 	});
 	const pending: { ts: string; text: string }[] = []; // directions waiting for a task folder
 
-
 	function flush(dir: string | undefined): void {
 		if (!dir) return;
 		for (const p of pending.splice(0)) append(dir, { kind: "direction", ts: p.ts, label: p.text.split("\n")[0]!.slice(0, 100), body: p.text });
 	}
 
-	// An advisor note after the card went up: say a revision is coming, rather than a second report.
-	pi.on("context", async event => {
-		if (!shown) return undefined;
-		const late = event.messages.some(m => {
-			const msg = m as { role?: string; customType?: string; timestamp?: number };
-			return msg.role === "custom" && msg.customType === "advisor" && (msg.timestamp ?? 0) > shown!.at;
-		});
-		if (late && !shown.pending) {
-			shown.pending = "An advisor raised a point after this report. The agent is checking it; a revised report will replace this one.";
-			paint();
-		}
-		return undefined;
+	// An advisor note: what the agent writes in answer to it is not drawn. After the final
+	// report, the agent's fix arrives as a new report_summary that replaces the card.
+	pi.on("message_start", async (event, ctx) => {
+		if (ctx.agent?.kind === "sub") return;
+		const m = event.message as { role?: string; customType?: string };
+		if (m.role === "custom" && m.customType === "advisor") quiet.start();
 	});
 
 	// The transcript line: one row, not a boxed card.
@@ -135,20 +236,33 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 		return linesComponent([`■ ${text}`], theme, "accent");
 	});
 
-	// Advisor cards: one row in the transcript (expand to read). Needs extensionRenderers.transcriptPresenters.
+	// Bookkeeping tool calls and advisor notes: not drawn. Needs extensionRenderers.transcriptPresenters.
 	try {
 		pi.registerTranscriptPresenter?.(block => {
+			if (!QUIET) return undefined;
+			if (block.type === "toolCall") return BOOKKEEPING_TOOLS.has(block.toolName) ? "hidden" : undefined;
 			if (block.type !== "message") return undefined;
 			const m = block.message as { customType?: string };
-			if (m.customType !== "advisor") return undefined;
-			return { compact: { label: "Advisor note (the final report covers it; expand to read)" } };
+			return m.customType === "advisor" ? "hidden" : undefined;
 		});
 	} catch {}
 
-	// Long finished replies: first lines only. Needs extensionRenderers.assistantText.
+	// The agent's text behind the scenes is not drawn; long finished replies show their first
+	// lines only. Needs extensionRenderers.assistantText.
 	try {
-		pi.registerAssistantTextRenderer?.(c => (c.streaming ? undefined : fold(c.text, FOLD_LINES)));
+		pi.registerAssistantTextRenderer?.(c => {
+			if (QUIET && quiet.covers(c.message.timestamp ?? 0)) return "";
+			return c.streaming ? undefined : fold(c.text, FOLD_LINES);
+		});
 	} catch {}
+
+	pi.registerCommand("answer", {
+		description: "Answer the final report's questions in the question dialog",
+		handler: async (_args, ctx) => {
+			if (!shown?.questions.length) return ctx.hasUI ? ctx.ui.notify("No open questions.", "info") : console.log("No open questions.");
+			await ask(ctx);
+		},
+	});
 
 	pi.registerCommand("jump", {
 		description: "Go back to one of your directions or an earlier report, newest first",
@@ -176,11 +290,16 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 			if (!continuing) publish(ctx);
 		},
 		draft(d) {
-			version++;
-			draft = { version, title: d.title, overview: d.overview, questions: d.questions, reportFile: d.reportFile, timelineFile: timelineFile(d.dir), dir: d.dir };
+			draft = { title: d.title, overview: d.overview, questions: d.questions, reportFile: d.reportFile, timelineFile: timelineFile(d.dir), dir: d.dir };
+			summarizedSinceInput = true;
+			quiet.start(); // the report speaks for the agent now
 			flush(d.dir); // directions that arrived before the task folder existed
-			return "It will be shown pinned above the prompt when you finish this turn. Reply in chat with one line only.";
+			return "It will be shown pinned above the prompt when you finish this turn. Do not repeat it in chat.";
 		},
+		nudged() {
+			quiet.start();
+		},
+		summarized: () => summarizedSinceInput,
 		hide(ctx) {
 			shown = undefined;
 			ui = ctx;

@@ -18,8 +18,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { active } from "../graph/plan";
+import { fmTask } from "../firstmate/fm";
 import { registerCleanup } from "../cleanup/register";
 import { registerFirstmate } from "../firstmate/register";
+import { registerFirstmateNotices } from "../firstmate/notices";
 import { registerScreen, SCREEN_RULES } from "../screen/register";
 import { checkQuestions } from "../screen/view";
 import { partOn } from "../parts";
@@ -141,7 +143,6 @@ export default function reportExtension(pi: ExtensionAPI) {
 		nudged = false;
 		pathsSinceStep = new Set();
 		statusAtLastStep = dirty;
-		updateStatus(ctx);
 		return s;
 	}
 
@@ -163,13 +164,6 @@ export default function reportExtension(pi: ExtensionAPI) {
 		store = s;
 		statusAtLastStep = await statusPaths(ctx);
 		if (ctx.agent?.kind !== "sub") LEADS.set(leadKey(), id);
-		updateStatus(ctx);
-	}
-
-	function updateStatus(ctx: ExtensionContext): void {
-		if (!ctx.hasUI || !store) return;
-		const steps = store.steps().length;
-		ctx.ui.setStatus("llmg-report", `report: ${steps} step${steps === 1 ? "" : "s"}`);
 	}
 
 	const ensureTask = async (ctx: ExtensionContext, title: string) => store ?? startTask(ctx, title);
@@ -206,7 +200,8 @@ export default function reportExtension(pi: ExtensionAPI) {
 		? registerMemory(pi, { repo: () => repo, taskId: () => store?.info().id })
 		: { promptBlock: () => undefined, forTask: () => undefined };
 	if (partOn("cleanup")) registerCleanup(pi, { reportRoot: root, currentTaskDir: () => store?.dir });
-	const screen = registerScreen(pi, { dir: () => store?.dir });
+	const screen = registerScreen(pi, { dir: () => store?.dir, firstmateWorker: () => !!fm.task() });
+	if (!fmTask()) registerFirstmateNotices(pi); // the first mate's window; a worker's doorbell is handled in registerFirstmate
 	const fm = registerFirstmate(pi, {
 		plan: () => graph.plan(),
 		planFile: () => (store ? path.join(store.dir, "plan.md") : undefined),
@@ -283,17 +278,21 @@ export default function reportExtension(pi: ExtensionAPI) {
 		if (ctx.agent?.kind === "sub") return;
 		if (!store || event.willContinue) return screen.agentEnd(event.willContinue === true, ctx);
 		const parts: string[] = [];
-		if (actionsSinceStep >= NUDGE_AFTER && !nudged) {
+		// After the final report the agent is done: no report or step nudges on top of it.
+		const done = screen.summarized();
+		if (!done && actionsSinceStep >= NUDGE_AFTER && !nudged) {
 			nudged = true; // one report nudge per gap, so it can never loop
 			parts.push(`You made ${actionsSinceStep} edits or commands since your last report_step. Call report_step for that work now.`);
 		}
-		const stepNudge = graph.nudge(lastAssistantText(event.messages), ctx);
+		const stepNudge = done ? undefined : graph.nudge(lastAssistantText(event.messages), ctx);
 		if (stepNudge) parts.push(stepNudge);
 		if (parts.length) {
+			// Hidden: the model gets it, the screen doesn't (OMP_GRAPHS_QUIET=0 shows it).
 			pi.sendMessage(
-				{ customType: "llmg-nudge", content: parts.join("\n"), display: true },
+				{ customType: "llmg-nudge", content: parts.join("\n"), display: process.env.OMP_GRAPHS_QUIET === "0" },
 				{ triggerTurn: true, deliverAs: "followUp" },
 			);
+			screen.nudged();
 		}
 		fm.changed();
 		screen.agentEnd(parts.length > 0, ctx); // nudged: it isn't done, so the report waits
@@ -363,8 +362,7 @@ export default function reportExtension(pi: ExtensionAPI) {
 			nudged = false;
 			pathsSinceStep = new Set();
 			statusAtLastStep = now;
-			updateStatus(ctx);
-			return { content: [{ type: "text", text: `Recorded step ${step.n}.` }], details: { step: step.n } };
+				return { content: [{ type: "text", text: `Recorded step ${step.n}.` }], details: { step: step.n } };
 		},
 	});
 

@@ -42,7 +42,6 @@ export function questionLines(qs: Question[]): string[] {
 		if (q.recommend) out.push(`    Recommended: ${q.recommend.trim()}${q.why ? `, because ${lowerFirst(q.why.trim().replace(/\.$/, ""))}.` : ""}`);
 		else if (q.why) out.push(`    Why it matters: ${q.why.trim()}`);
 	});
-	if (qs.length) out.push(`Answer like: ${qs.map((q, i) => `Q${i + 1} ${q.options?.length ? "a" : "<answer>"}`).join(", ")}`);
 	return out;
 }
 
@@ -51,13 +50,15 @@ function lowerFirst(s: string): string {
 }
 
 export interface Card {
-	version: number;
 	title: string;
 	overview: string;
 	questions: Question[];
 	reportFile: string;
 	timelineFile: string;
-	pending?: string; // shown on top while the report is being revised
+	/** How to answer the questions, shown under them (e.g. "/answer opens them one at a time"). */
+	answerHint?: string;
+	/** The question dialog holds the options: the card lists the asks only. */
+	dialog?: boolean;
 }
 
 /** First sentences of the overview, up to `max` characters, cut at a sentence end. */
@@ -72,12 +73,12 @@ export function headline(overview: string, max = 300): string {
 /** Lines for the widget pinned above the prompt. Paths are on their own lines so a click finds them whole. */
 export function cardLines(c: Card): string[] {
 	const out: string[] = [];
-	if (c.pending) out.push(`… ${c.pending}`);
-	out.push(`━━ Final report${c.version > 1 ? ` (v${c.version})` : ""}: ${c.title} ━━`);
+	out.push(`━━ Final report: ${c.title} ━━`);
 	out.push(headline(c.overview));
 	if (c.questions.length) {
 		out.push("", `NEEDS YOU: ${c.questions.length} question${c.questions.length === 1 ? "" : "s"}`);
-		out.push(...questionLines(c.questions));
+		out.push(...(c.dialog ? c.questions.map((q, i) => `Q${i + 1}. ${q.ask.trim()}`) : questionLines(c.questions)));
+		if (c.answerHint) out.push(c.answerHint);
 	} else {
 		out.push("Nothing needs you.");
 	}
@@ -94,6 +95,44 @@ export function fold(text: string, maxLines: number, keep = 4): string | undefin
 	const lines = text.split("\n");
 	if (lines.length <= maxLines) return undefined;
 	return `${lines.slice(0, keep).join("\n")}\n\n_… ${lines.length - keep} more lines folded. /jump shows the full text._`;
+}
+
+/** One ask-dialog question per report question: the recommendation preselected, "why" under it. */
+export interface DialogQuestion {
+	id: string;
+	header: string;
+	question: string;
+	options: { label: string; description?: string }[];
+	recommended?: number;
+}
+
+export function dialogQuestions(qs: Question[]): DialogQuestion[] {
+	return qs.map((q, i) => {
+		const options = (q.options ?? []).map(o => ({ label: o.trim() }));
+		const rec = q.recommend ? options.findIndex(o => o.label === q.recommend!.trim()) : -1;
+		if (rec >= 0 && q.why) options[rec] = { ...options[rec]!, description: q.why.trim() };
+		const question = q.why && rec < 0 ? `${q.ask.trim()}\n${q.why.trim()}` : q.ask.trim();
+		return { id: `q${i + 1}`, header: `Q${i + 1}`, question, options, ...(rec >= 0 ? { recommended: rec } : {}) };
+	});
+}
+
+/** A submitted answer to one dialog question (the fields omp's ask dialog returns). */
+export interface DialogAnswer {
+	id: string;
+	selectedOptions: string[];
+	customInput?: string;
+	note?: string;
+}
+
+/** The answers as one plain message to the agent, in question order. */
+export function answersText(qs: Question[], answers: DialogAnswer[]): string {
+	const lines = ["My answers to the questions in the final report:"];
+	qs.forEach((q, i) => {
+		const a = answers.find(x => x.id === `q${i + 1}`);
+		const picked = [...(a?.selectedOptions ?? []), ...(a?.customInput?.trim() ? [a.customInput.trim()] : [])];
+		lines.push(`Q${i + 1}. ${q.ask.trim()}`, `    ${picked.length ? picked.join("; ") : "(no answer)"}${a?.note?.trim() ? ` (note: ${a.note.trim()})` : ""}`);
+	});
+	return lines.join("\n");
 }
 
 /** Firstmate's operational input envelope (bin/fm-operational-input.sh): not a direction from you. */
