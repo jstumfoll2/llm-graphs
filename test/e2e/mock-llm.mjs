@@ -56,6 +56,16 @@ const server = http.createServer((req, res) => {
 			return;
 		}
 		const body = JSON.parse(raw || "{}");
+		// omp's side requests (session title, model probes) get a plain answer and do not use up a scripted step.
+		const lastText = JSON.stringify(body.messages?.at(-1)?.content ?? "");
+		if (!(body.tools ?? []).length || lastText.includes("<title-request>")) {
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			chunk(res, { role: "assistant", content: "Mock task" });
+			chunk(res, {}, "stop");
+			res.write("data: [DONE]\n\n");
+			res.end();
+			return;
+		}
 		const step = script[Math.min(n, script.length - 1)];
 		log.push({
 			n,

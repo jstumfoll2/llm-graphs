@@ -11,8 +11,10 @@
  *    the report, once per direction from you.
  *  - Questions are answered in omp's own question dialog (one tab per
  *    question, the recommendation preselected). It opens by itself when the
- *    agent finishes, or with /answer; inside Firstmate only with /answer, so
- *    keystrokes Firstmate types into the pane can never answer for you.
+ *    agent finishes, and again after any later turn while they are still
+ *    open; /answer opens it any time. Lines that Firstmate (or any script)
+ *    types into the pane while it is open are kept out of it and handed on
+ *    (see typing.ts), so they can never answer for you.
  *  - Behind the scenes: the plugin's nudges are hidden, its own bookkeeping
  *    tool calls (report_step, step_done, ...) and advisor notes are not drawn,
  *    and what the agent writes after a nudge, an advisor note or its final
@@ -25,6 +27,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { TypingGuard } from "./typing";
 import { answersText, type Card, cardLines, type DialogAnswer, dialogQuestions, fold, isOperational, type Question, reportBody, timelineEntry } from "./view";
 
 const FOLD_LINES = Number(process.env.OMP_GRAPHS_FOLD_LINES ?? 30);
@@ -38,8 +41,13 @@ export function askMode(env: NodeJS.ProcessEnv = process.env): "auto" | "command
 	const v = env.OMP_GRAPHS_ASK?.trim().toLowerCase();
 	if (v === "auto" || v === "command" || v === "off") return v;
 	if (v === "0") return "off";
-	// Firstmate types into its panes; an open dialog would take those keystrokes as answers.
-	return env.FM_HOME || env.FM_TASK_ID ? "command" : "auto";
+	// Also inside Firstmate: what it types into the pane is kept out of the dialog (typing.ts).
+	return "auto";
+}
+
+/** The same questions, in the same order: answering one card answers the other. */
+export function sameQuestions(a: Question[], b: Question[]): boolean {
+	return a.length === b.length && a.every((q, i) => q.ask.trim() === b[i]!.ask.trim());
 }
 
 /** Half-open time ranges in which the agent's text is not drawn. */
@@ -94,13 +102,23 @@ export const SCREEN_RULES = `## Talking to the user (llm-graphs)
 - If an advisor note or a check sends you back to work after report_summary, fix it, then call report_summary again with the complete corrected report. It replaces the earlier one. Do not describe the correction in chat.
 - Anything you need from the user goes in report_summary "questions": one decision per question, ending in "?", with the options and your recommendation. The user answers them in a question dialog. Ask for the decision itself ("Merge MR !42 now?"), not around it ("Let me know if you'd like..."). Do not use the ask tool for these.`;
 
-export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | undefined; firstmateWorker: () => boolean }): ScreenHooks {
+export function registerScreen(
+	pi: ExtensionAPI,
+	deps: {
+		dir: () => string | undefined;
+		firstmateWorker: () => boolean;
+		/** A Firstmate notice typed while the dialog was open: true if it was handed on. */
+		notice?: (text: string, ctx: ExtensionContext) => boolean;
+	},
+): ScreenHooks {
 	let ui: ExtensionContext | undefined;
 	let draft: (Card & { dir: string }) | undefined;
 	let shown: (Card & { at: number }) | undefined;
 	let linked = false; // the transcript already has a report line since your last message
 	let summarizedSinceInput = false;
 	let asking = false;
+	/** The card's questions should open in the dialog as soon as the agent is idle. */
+	let askPending = false;
 	const quiet = new QuietSpans();
 	const entries: Entry[] = [];
 	const mode = () => (deps.firstmateWorker() ? "off" : askMode());
@@ -125,6 +143,7 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 	function answerHint(): string | undefined {
 		const m = mode();
 		if (m === "off") return "Answer by writing back, e.g. \"Q1 yes\".";
+		if (m === "auto") return "Esc keeps them here; /answer opens them again.";
 		return "/answer opens these one at a time.";
 	}
 
@@ -133,6 +152,39 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 		quiet.end();
 		linked = false;
 		summarizedSinceInput = false;
+		askPending = false; // you wrote back instead: the agent's next report asks again if it still needs to
+	}
+
+	/** A line typed into the pane while the dialog was open: on to the agent, as if typed at the prompt. */
+	function typedLine(text: string, ctx: ExtensionContext): void {
+		if (deps.notice?.(text, ctx)) return;
+		void pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+	}
+
+	/** While the dialog is open, typed-in lines (Firstmate's notices) go around it, not into it. */
+	function guardTyping(ctx: ExtensionContext): () => void {
+		const listen = (ctx.ui as { onTerminalInput?: (h: (d: string) => { consume?: boolean } | undefined) => () => void }).onTerminalInput;
+		if (typeof listen !== "function") return () => {};
+		const guard = new TypingGuard();
+		const timer = setInterval(() => {
+			const line = guard.tick();
+			if (line) typedLine(line, ctx);
+		}, 250);
+		let off: () => void = () => {};
+		try {
+			off = listen.call(ctx.ui, data => {
+				const r = guard.feed(data);
+				if (r.line) typedLine(r.line, ctx);
+				return r.consume ? { consume: true } : undefined;
+			});
+		} catch {}
+		return () => {
+			clearInterval(timer);
+			off();
+			// A line still being typed when the dialog closed: what came before its Enter is handed on.
+			const rest = guard.tick(Number.POSITIVE_INFINITY);
+			if (rest) typedLine(rest, ctx);
+		};
 	}
 
 	async function ask(ctx: ExtensionContext): Promise<void> {
@@ -144,18 +196,24 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 			return;
 		}
 		asking = true;
+		askPending = false;
+		const unguard = guardTyping(ctx);
 		try {
 			const r = (await dialog.call(ctx.ui, dialogQuestions(card.questions))) as { kind?: string; results?: DialogAnswer[] } | undefined;
 			if (r?.kind !== "submit" || !r.results) return; // cancelled, or "chat about it": the card keeps the questions
-			if (shown !== card) return; // replaced meanwhile
 			const text = answersText(card.questions, r.results);
 			userSpoke();
-			shown = { ...card, questions: [], answerHint: undefined };
-			paint();
+			// A report that came in meanwhile with the same questions is answered too; one with new ones keeps them.
+			const now = shown;
+			if (now && (now === card || sameQuestions(now.questions, card.questions))) {
+				shown = { ...now, questions: [], answerHint: undefined };
+				paint();
+			}
 			await pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 		} catch {
 			// display only: the questions stay on the card
 		} finally {
+			unguard();
 			asking = false;
 		}
 	}
@@ -165,12 +223,25 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 		if (tries < 100) setTimeout(() => whenIdle(ctx, fn, tries + 1), 100);
 	}
 
+	/** Open the dialog once the agent is idle; if another turn started first, its end tries again. */
+	function askWhenIdle(ctx: ExtensionContext): void {
+		const card = shown;
+		setTimeout(
+			() =>
+				whenIdle(ctx, () => {
+					if (askPending && shown === card && card?.questions.length) void ask(ctx);
+				}),
+			50,
+		);
+	}
+
 	function publish(ctx: ExtensionContext): void {
 		if (!draft) return;
 		const d = draft;
 		draft = undefined;
 		const card = { ...d, answerHint: d.questions.length ? answerHint() : undefined, dialog: mode() !== "off", at: Date.now() };
 		shown = card;
+		askPending = card.questions.length > 0 && mode() === "auto";
 		ui = ctx;
 		append(d.dir, { kind: "report", ts: new Date().toISOString(), label: `Final report: ${d.title}`, body: reportBody(d) });
 		paint();
@@ -179,18 +250,17 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 		// would be queued as a follow-up and start another turn.
 		const needLine = !linked;
 		linked = true;
-		setTimeout(
-			() =>
-				whenIdle(ctx, () => {
-					if (shown !== card) return;
-					if (needLine) {
+		if (needLine)
+			setTimeout(
+				() =>
+					whenIdle(ctx, () => {
+						if (shown !== card) return;
 						const line = `Final report: ${d.title}. ${d.questions.length ? `${d.questions.length} question(s) for you. ` : ""}${d.reportFile}`;
 						pi.sendMessage({ customType: "llmg-final", content: line, display: true }, { triggerTurn: false });
-					}
-					if (card.questions.length && mode() === "auto") void ask(ctx);
-				}),
-			50,
-		);
+					}),
+				50,
+			);
+		if (askPending) askWhenIdle(ctx);
 	}
 
 	pi.on("session_start", async (_e, ctx) => {
@@ -287,7 +357,10 @@ export function registerScreen(pi: ExtensionAPI, deps: { dir: () => string | und
 	return {
 		agentEnd(continuing, ctx) {
 			flush(deps.dir());
-			if (!continuing) publish(ctx);
+			if (continuing) return;
+			if (draft) publish(ctx);
+			// The dialog did not get to open (another turn, e.g. a Firstmate notice, started first).
+			else if (askPending && !asking) askWhenIdle(ctx);
 		},
 		draft(d) {
 			draft = { title: d.title, overview: d.overview, questions: d.questions, reportFile: d.reportFile, timelineFile: timelineFile(d.dir), dir: d.dir };

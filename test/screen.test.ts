@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { askMode, BOOKKEEPING_TOOLS, QuietSpans, wrap } from "../extensions/screen/register";
+import { askMode, BOOKKEEPING_TOOLS, QuietSpans, sameQuestions, wrap } from "../extensions/screen/register";
+import { HOLD_MS, TypingGuard } from "../extensions/screen/typing";
 import { noticeKind, noticesOn } from "../extensions/firstmate/notices";
 import { answersText, cardLines, checkQuestions, dialogQuestions, fold, headline, isOperational, questionLines, timelineEntry } from "../extensions/screen/view";
 
@@ -137,11 +138,67 @@ describe("the question dialog", () => {
 		);
 	});
 
-	test("opens by itself, except inside Firstmate where only /answer opens it", () => {
+	test("opens by itself, Firstmate or not, unless switched to /answer only or off", () => {
 		expect(askMode({})).toBe("auto");
-		expect(askMode({ FM_HOME: "/fm" })).toBe("command");
-		expect(askMode({ FM_HOME: "/fm", OMP_GRAPHS_ASK: "auto" })).toBe("auto");
+		expect(askMode({ FM_HOME: "/fm" })).toBe("auto");
+		expect(askMode({ FM_HOME: "/fm", OMP_GRAPHS_ASK: "command" })).toBe("command");
 		expect(askMode({ OMP_GRAPHS_ASK: "off" })).toBe("off");
+	});
+
+	test("a later report with the same questions counts as answered", () => {
+		const a = [{ ask: "Merge MR !42 now?" }, { ask: "Which limit applies?" }];
+		expect(sameQuestions(a, [{ ask: " Merge MR !42 now? " }, { ask: "Which limit applies?" }])).toBe(true);
+		expect(sameQuestions(a, [{ ask: "Merge MR !42 now?" }])).toBe(false);
+		expect(sameQuestions(a, [{ ask: "Merge MR !43 now?" }, { ask: "Which limit applies?" }])).toBe(false);
+	});
+});
+
+describe("typing kept out of the open dialog", () => {
+	/** Feed a string one key at a time, `gap` ms apart, like tmux send-keys. */
+	function type(g: TypingGuard, text: string, start: number, gap: number) {
+		const out: { key: string; consume: boolean; line?: string }[] = [];
+		[...text].forEach((key, i) => out.push({ key, ...g.feed(key, start + i * gap) }));
+		return out;
+	}
+
+	test("a Firstmate notice is held back whole, its Enter included, and handed on", () => {
+		const g = new TypingGuard();
+		const notice = "\u2063FIRSTMATE_OP: v1 watcher: wake";
+		const keys = type(g, notice, 1000, 1);
+		expect(keys.every(k => k.consume)).toBe(true);
+		expect(g.feed("\r", 1100)).toEqual({ consume: true, line: notice });
+		expect(g.holding()).toBe(false);
+		// The dialog is yours again.
+		expect(g.feed("\r", 3000).consume).toBe(false);
+	});
+
+	test("a fast line without the marker is caught from its second key", () => {
+		const g = new TypingGuard();
+		const keys = type(g, "[fm-from-firstmate] hi", 1000, 1);
+		expect(keys[0]!.consume).toBe(false); // "[" does nothing in the dialog
+		expect(keys.slice(1).every(k => k.consume)).toBe(true);
+		expect(g.feed("\r", 1050).line).toBe("[fm-from-firstmate] hi");
+	});
+
+	test("a paste is held back", () => {
+		const g = new TypingGuard();
+		expect(g.feed("\x1b[200~some text\x1b[201~", 1000)).toEqual({ consume: true });
+		expect(g.feed("\r", 1010).line).toBe("some text");
+	});
+
+	test("your own keys pass: arrows, Enter, n for a note, letters typed at a human pace", () => {
+		const g = new TypingGuard();
+		for (const [i, k] of ["\x1b[B", "\x1b[A", "n", "o", "k", "\r", " ", "\t", "\x1b"].entries()) {
+			expect(g.feed(k, 1000 + i * 120).consume).toBe(false);
+		}
+	});
+
+	test("a held line whose Enter never comes is handed on after a while", () => {
+		const g = new TypingGuard();
+		type(g, "\u2063FIRSTMATE_OP: v1 x: y", 1000, 1);
+		expect(g.tick(1100)).toBeUndefined();
+		expect(g.tick(1100 + HOLD_MS)).toBe("\u2063FIRSTMATE_OP: v1 x: y");
+		expect(g.holding()).toBe(false);
 	});
 });
 

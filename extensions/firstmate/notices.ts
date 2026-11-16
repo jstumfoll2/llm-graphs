@@ -33,25 +33,34 @@ export function noticesOn(env: NodeJS.ProcessEnv = process.env): boolean {
 	return env.OMP_GRAPHS_FM_NOTICES?.trim().toLowerCase() !== "show";
 }
 
-export function registerFirstmateNotices(pi: ExtensionAPI): void {
-	if (!noticesOn()) return;
+export interface FirstmateNotices {
+	/** Hand on a Firstmate notice typed into the pane; false if the text is not one (or notices are shown as typed). */
+	deliver(text: string, ctx: ExtensionContext): boolean;
+}
+
+export function registerFirstmateNotices(pi: ExtensionAPI): FirstmateNotices {
+	if (!noticesOn()) return { deliver: () => false };
 	const recent: { at: Date; kind: string; text: string }[] = [];
 	const clock = (d: Date) => d.toTimeString().slice(0, 5);
 
-	pi.on("input", async (event, ctx) => {
-		if (ctx.agent?.kind === "sub" || event.source === "extension") return undefined;
-		const kind = noticeKind(event.text ?? "");
-		if (!kind) return undefined;
+	function deliver(text: string, ctx: ExtensionContext): boolean {
+		const kind = noticeKind(text);
+		if (!kind) return false;
 		const at = new Date();
-		recent.push({ at, kind, text: event.text });
+		recent.push({ at, kind, text });
 		if (recent.length > KEEP) recent.splice(0, recent.length - KEEP);
 		// The model receives the same text (omp sends custom messages to the provider as user content).
 		pi.sendMessage(
-			{ customType: "firstmate-notice", content: event.text, display: false, details: { kind } },
+			{ customType: "firstmate-notice", content: text, display: false, details: { kind } },
 			ctx.isIdle() ? { triggerTurn: true } : { triggerTurn: true, deliverAs: "followUp" },
 		);
 		show(ctx, `Firstmate: ${kind} ${clock(at)}`);
-		return { handled: true };
+		return true;
+	}
+
+	pi.on("input", async (event, ctx) => {
+		if (ctx.agent?.kind === "sub" || event.source === "extension") return undefined;
+		return deliver(event.text ?? "", ctx) ? { handled: true } : undefined;
 	});
 
 	pi.registerCommand("fm-notices", {
@@ -64,6 +73,7 @@ export function registerFirstmateNotices(pi: ExtensionAPI): void {
 			else console.log(text);
 		},
 	});
+	return { deliver };
 }
 
 function show(ctx: ExtensionContext, line: string): void {

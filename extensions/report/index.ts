@@ -200,8 +200,9 @@ export default function reportExtension(pi: ExtensionAPI) {
 		? registerMemory(pi, { repo: () => repo, taskId: () => store?.info().id })
 		: { promptBlock: () => undefined, forTask: () => undefined };
 	if (partOn("cleanup")) registerCleanup(pi, { reportRoot: root, currentTaskDir: () => store?.dir });
-	const screen = registerScreen(pi, { dir: () => store?.dir, firstmateWorker: () => !!fm.task() });
-	if (!fmTask()) registerFirstmateNotices(pi); // the first mate's window; a worker's doorbell is handled in registerFirstmate
+	const screen = registerScreen(pi, { dir: () => store?.dir, firstmateWorker: () => !!fm.task(), notice: (text, ctx) => notices?.deliver(text, ctx) ?? false });
+	// The first mate's window; a worker's doorbell is handled in registerFirstmate.
+	const notices = fmTask() ? undefined : registerFirstmateNotices(pi);
 	const fm = registerFirstmate(pi, {
 		plan: () => graph.plan(),
 		planFile: () => (store ? path.join(store.dir, "plan.md") : undefined),
